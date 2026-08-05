@@ -1,0 +1,206 @@
+export type Segment = {
+  offset: number;
+  size: number;
+  end: number;
+  label: string;
+  category: string;
+  path: string[];
+  path_label: string;
+  edit_safety: {
+    level: string;
+    label: string;
+    reason: string;
+    mark: string;
+  };
+};
+
+export type LayoutResult = {
+  file_size: number;
+  segments: Segment[];
+  summary: Record<string, number>;
+};
+
+export type MetadataResult = {
+  filename: string;
+  format_label: string;
+  file_size: number;
+  media_kind: "video" | "image" | "unknown";
+  text: string;
+};
+
+export type StoredFile = {
+  file_id: string;
+  session_id: string;
+  filename: string;
+  size: number;
+  media_kind: string;
+};
+
+export type JobResult = {
+  id: string;
+  type: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  error: string | null;
+  output_file_id: string | null;
+};
+
+export type User = {
+  id: string;
+  email: string;
+  name: string;
+  picture_url: string | null;
+};
+
+export type AuthConfig = {
+  enabled: boolean;
+  login_url: string | null;
+};
+
+const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+
+function fetchOptions(init?: RequestInit): RequestInit {
+  return {
+    credentials: "include",
+    ...init,
+    headers: init?.headers,
+  };
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, fetchOptions(init));
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || response.statusText);
+  }
+  return response.json() as Promise<T>;
+}
+
+export async function getAuthConfig(): Promise<AuthConfig> {
+  return request<AuthConfig>("/api/v1/auth/config");
+}
+
+export async function getCurrentUser(): Promise<User | null> {
+  const response = await fetch(`${API_BASE}/api/v1/auth/me`, fetchOptions());
+  if (response.status === 401) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<User>;
+}
+
+export function loginUrl(returnPath = "/"): string {
+  const returnUrl = `${window.location.origin}${returnPath}`;
+  return `${API_BASE}/api/v1/auth/google?return_url=${encodeURIComponent(returnUrl)}`;
+}
+
+export async function logout(): Promise<void> {
+  await request("/api/v1/auth/logout", { method: "POST" });
+}
+
+export async function createSession(): Promise<string> {
+  const data = await request<{ session_id: string }>("/api/v1/sessions", { method: "POST" });
+  return data.session_id;
+}
+
+export async function uploadFile(sessionId: string, file: File): Promise<StoredFile> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${API_BASE}/api/v1/sessions/${sessionId}/files`, fetchOptions({
+    method: "POST",
+    body: form,
+  }));
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
+}
+
+export function getMetadata(fileId: string): Promise<MetadataResult> {
+  return request(`/api/v1/files/${fileId}/metadata`);
+}
+
+export function getLayout(fileId: string): Promise<LayoutResult> {
+  return request(`/api/v1/files/${fileId}/layout`);
+}
+
+export function previewUrl(fileId: string): string {
+  return `${API_BASE}/api/v1/files/${fileId}/preview.jpg`;
+}
+
+export function downloadUrl(fileId: string): string {
+  return `${API_BASE}/api/v1/files/${fileId}/download`;
+}
+
+export async function getSegmentBytes(fileId: string, offset: number): Promise<{ hex: string; text: string }> {
+  return request(`/api/v1/files/${fileId}/segments/${offset}?limit=512`);
+}
+
+export async function getUnknownHeaders(fileId: string): Promise<string> {
+  const data = await request<{ text: string }>(`/api/v1/files/${fileId}/unknown-headers`);
+  return data.text;
+}
+
+export async function getUnknownMemory(fileId: string): Promise<string> {
+  const data = await request<{ text: string }>(`/api/v1/files/${fileId}/unknown-memory`);
+  return data.text;
+}
+
+export async function startTransferJob(
+  targetFileId: string,
+  sourceFileId: string,
+  outputFilename: string,
+): Promise<JobResult> {
+  return request("/api/v1/jobs/transfer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      target_file_id: targetFileId,
+      source_file_id: sourceFileId,
+      output_filename: outputFilename,
+    }),
+  });
+}
+
+export async function startUpdatePreviewJob(sourceFileId: string, outputFilename: string): Promise<JobResult> {
+  return request("/api/v1/jobs/update-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source_file_id: sourceFileId,
+      output_filename: outputFilename,
+    }),
+  });
+}
+
+export async function startConvertJob(
+  sourceFileId: string,
+  outputFilename: string,
+  target: string,
+): Promise<JobResult> {
+  return request("/api/v1/jobs/convert", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source_file_id: sourceFileId,
+      output_filename: outputFilename,
+      target,
+    }),
+  });
+}
+
+export async function getJob(jobId: string): Promise<JobResult> {
+  return request(`/api/v1/jobs/${jobId}`);
+}
+
+export async function pollJob(jobId: string): Promise<JobResult> {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const job = await getJob(jobId);
+    if (job.status === "succeeded" || job.status === "failed") {
+      return job;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error("Job timed out");
+}

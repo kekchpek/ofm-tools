@@ -4,131 +4,45 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections import Counter
 from pathlib import Path
 
-from layout import LayoutParseError, UnsupportedLayoutError, parse_file_layout
-from layout.heif import format_payload_metadata_report
-from layout.atom_database import format_unknown_atom_keys
-from layout.base import CATEGORY_LABELS, format_unknown_memory_segments
-from metadata import UnsupportedFormatError, format_metadata, supported_extensions
-
-
-def _format_layout_segments(
-    layout,
-    *,
-    category: str | None = None,
-) -> str:
-    total = len(layout.segments)
-    number_width = len(str(total))
-    lines: list[str] = [
-        f"File size: {layout.file_size:,} bytes | Segments: {total}",
-        "",
-    ]
-
-    for index, segment in enumerate(layout.segments, start=1):
-        if category is not None and segment.category != category:
-            continue
-        category_label = CATEGORY_LABELS.get(segment.category, segment.category.title())
-        number = f"{index:>{number_width}}."
-        lines.append(
-            f"{number} {segment.label}  |  {_format_segment_size(segment.size)}  |  {category_label}"
-        )
-        lines.append(f"    0x{segment.offset:08X} | {segment.path_label}")
-
-    return "\n".join(lines)
-
-
-def _format_segment_size(size: int) -> str:
-    if size < 1024:
-        return f"{size} B"
-    if size < 1024 * 1024:
-        return f"{size / 1024:.1f} KB"
-    if size < 1024 * 1024 * 1024:
-        return f"{size / (1024 * 1024):.1f} MB"
-    return f"{size / (1024 * 1024 * 1024):.1f} GB"
-
-
-def _format_layout_summary(layout) -> str:
-    counts = Counter(segment.category for segment in layout.segments)
-    lines = [
-        f"File size: {layout.file_size:,} bytes",
-        f"Segments: {len(layout.segments)}",
-        "",
-        "By category:",
-    ]
-    for category in ("header", "structure", "metadata", "payload", "padding", "unknown"):
-        if counts.get(category):
-            label = CATEGORY_LABELS.get(category, category.title())
-            lines.append(f"  {label}: {counts[category]}")
-    return "\n".join(lines)
-
-
-def inspect_file(path: Path) -> str:
-    sections: list[str] = [f"=== {path.name} ===", ""]
-
-    try:
-        sections.extend(["--- Metadata ---", format_metadata(path), ""])
-    except UnsupportedFormatError as exc:
-        sections.extend(["--- Metadata ---", f"Error: {exc}", ""])
-    except Exception as exc:
-        sections.extend(["--- Metadata ---", f"Error reading metadata: {exc}", ""])
-
-    try:
-        layout = parse_file_layout(path)
-    except (LayoutParseError, UnsupportedLayoutError) as exc:
-        sections.extend(["--- Layout ---", f"Error: {exc}", ""])
-        return "\n".join(sections)
-
-    sections.extend(["--- Layout Summary ---", _format_layout_summary(layout), ""])
-
-    headers_text = format_unknown_atom_keys(layout.segments)
-    sections.extend(
-        [
-            "--- Unknown Headers ---",
-            headers_text or "(none)",
-            "",
-        ]
-    )
-
-    memory_text = format_unknown_memory_segments(layout.segments)
-    sections.extend(
-        [
-            "--- Unknown Memory ---",
-            memory_text or "(none)",
-            "",
-        ]
-    )
-
-    return "\n".join(sections).rstrip() + "\n"
+from core.errors import LayoutError, UnsupportedMediaError
+from core.inspect import (
+    format_layout_summary_text,
+    inspect_file_report,
+    inspect_layout,
+    inspect_metadata,
+    inspect_payload_metadata,
+    inspect_unknown_headers,
+    inspect_unknown_memory,
+)
+from layout.base import CATEGORY_LABELS
+from metadata import supported_extensions
 
 
 def run_command(command: str, path: Path, *, category: str | None = None) -> str:
     if command == "metadata":
-        return format_metadata(path)
+        return inspect_metadata(path).as_text()
+
+    layout = inspect_layout(path)
 
     if command == "headers":
-        layout = parse_file_layout(path)
-        return format_unknown_atom_keys(layout.segments) or "(none)"
+        return inspect_unknown_headers(path).text
 
     if command == "memory":
-        layout = parse_file_layout(path)
-        return format_unknown_memory_segments(layout.segments) or "(none)"
+        return inspect_unknown_memory(path).text
 
     if command == "layout":
-        layout = parse_file_layout(path)
-        return _format_layout_segments(layout, category=category)
+        return layout.as_text(category=category)
 
     if command == "summary":
-        layout = parse_file_layout(path)
-        return _format_layout_summary(layout)
+        return format_layout_summary_text(layout)
 
     if command == "payload":
-        layout = parse_file_layout(path)
-        return format_payload_metadata_report(path, layout)
+        return inspect_payload_metadata(path).text
 
     if command == "inspect":
-        return inspect_file(path)
+        return inspect_file_report(path)
 
     raise ValueError(f"Unknown command: {command}")
 
@@ -210,10 +124,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         output = run_command(command, path, category=category)
-    except UnsupportedFormatError as exc:
+    except UnsupportedMediaError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    except (LayoutParseError, UnsupportedLayoutError) as exc:
+    except LayoutError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:

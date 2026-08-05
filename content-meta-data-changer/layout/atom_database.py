@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from layout.base import FileSegment
@@ -46,7 +47,7 @@ _IMAGE_SEGMENT_DESCRIPTIONS = {
     "trailing": "Extra bytes after the final container marker or chunk.",
 }
 
-_connection: sqlite3.Connection | None = None
+_connection_local = threading.local()
 
 
 def _initialize_database() -> None:
@@ -87,14 +88,14 @@ def _initialize_database() -> None:
 
 
 def _get_connection() -> sqlite3.Connection:
-    global _connection
-
-    if _connection is None:
+    connection = getattr(_connection_local, "connection", None)
+    if connection is None:
         _initialize_database()
-        _connection = sqlite3.connect(DB_PATH)
-        _connection.row_factory = sqlite3.Row
+        connection = sqlite3.connect(DB_PATH, check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        _connection_local.connection = connection
 
-    return _connection
+    return connection
 
 
 def resolve_atom_key(segment: FileSegment) -> str:

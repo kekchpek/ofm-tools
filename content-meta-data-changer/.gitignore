@@ -2,3 +2,10 @@
 __pycache__/
 *.pyc
 layout/data/atoms.db
+data/
+.env
+node_modules/
+web/dist/
+.pytest_cache/
+htmlcov/
+.coverage
