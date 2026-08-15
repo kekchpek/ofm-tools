@@ -191,7 +191,7 @@ def service_root() -> dict[str, object]:
         "endpoints": {
             "health": "/api/v1/health",
             "auth_config": "/api/v1/auth/config",
-            "docs": "/docs",
+            **({"docs": "/docs"} if os.environ.get("ENABLE_API_DOCS", "1") != "0" else {}),
         },
     }
 

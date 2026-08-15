@@ -50,7 +50,7 @@ export function useSession(): SessionState {
       } catch (cause) {
         // Without this the app would silently behave as if auth were disabled
         // and then fail later with a confusing "session is not ready".
-        if (!cancelled) setError(describe(cause));
+        if (!cancelled) setError((previous) => previous ?? describe(cause));
       } finally {
         if (!cancelled) setAuthReady(true);
       }
@@ -76,7 +76,9 @@ export function useSession(): SessionState {
         setError(null);
       })
       .catch((cause) => {
-        if (!cancelled) setError(describe(cause));
+        // Keep the earliest failure: when CORS blocks everything, the auth
+        // lookup fails first and names the more diagnostic endpoint.
+        if (!cancelled) setError((previous) => previous ?? describe(cause));
       });
     return () => {
       cancelled = true;

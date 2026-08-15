@@ -47,6 +47,28 @@ def test_normalize_output_name(requested, expected, tmp_path):
     assert normalize_output_name(requested, donor, fallback_stem="fallback") == expected
 
 
+@pytest.mark.parametrize(
+    ("requested", "donor_name", "expected"),
+    [
+        # The reported bug: an already-correct name gained a second extension.
+        ("IMG_0118.HEIC", "donor.heic", "IMG_0118.HEIC"),
+        ("IMG_0118.heic", "donor.HEIC", "IMG_0118.heic"),
+        ("photo.JPG", "donor.jpg", "photo.JPG"),
+        ("clip.mov", "donor.MOV", "clip.mov"),
+        # Only a trailing match counts. Here ".photo" is the trailing segment,
+        # so it is replaced like any other wrong extension.
+        ("my.heic.photo", "donor.heic", "my.heic.heic"),
+        # Bare extension with nothing before it falls back rather than hiding the file.
+        (".heic", "donor.heic", "fallback.heic"),
+    ],
+)
+def test_normalize_output_name_does_not_double_the_extension(
+    requested, donor_name, expected, tmp_path
+):
+    donor = tmp_path / donor_name
+    assert normalize_output_name(requested, donor, fallback_stem="fallback") == expected
+
+
 def test_image_result_takes_payload_from_source(tmp_path):
     source = _png(tmp_path / "source.png", (64, 48), (220, 30, 70))
     donor = _jpeg_with_exif(tmp_path / "donor.jpg", (16, 16), "ACME")

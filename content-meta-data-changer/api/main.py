@@ -43,8 +43,25 @@ async def lifespan(_app: FastAPI):
             await cleanup_task
 
 
+def docs_enabled() -> bool:
+    """Whether the interactive API docs are served.
+
+    They enumerate every endpoint and schema to anonymous callers, which is
+    useful in development and unnecessary exposure in production.
+    """
+    return os.environ.get("ENABLE_API_DOCS", "1") != "0"
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Content Metadata Changer API", version="1.0.0", lifespan=lifespan)
+    serve_docs = docs_enabled()
+    app = FastAPI(
+        title="Content Metadata Changer API",
+        version="1.0.0",
+        lifespan=lifespan,
+        docs_url="/docs" if serve_docs else None,
+        redoc_url="/redoc" if serve_docs else None,
+        openapi_url="/openapi.json" if serve_docs else None,
+    )
     origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
     app.add_middleware(
         CORSMiddleware,

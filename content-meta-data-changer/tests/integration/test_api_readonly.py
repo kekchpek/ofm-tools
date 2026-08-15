@@ -71,3 +71,25 @@ async def test_upload_and_inspect(client, video6_target):
     preview = await client.get(f"/api/v1/files/{file_id}/preview.jpg")
     assert preview.status_code == 200
     assert preview.content[:3] == b"\xff\xd8\xff"
+
+
+@pytest.mark.anyio
+async def test_docs_can_be_disabled(tmp_path, monkeypatch):
+    """Production deploys should be able to stop enumerating the API."""
+    from importlib import reload
+
+    monkeypatch.setenv("ENABLE_API_DOCS", "0")
+    import api.main as api_main
+
+    reload(api_main)
+    transport = ASGITransport(app=api_main.create_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert (await client.get(path)).status_code == 404, path
+        # The service still works and stops advertising docs.
+        root = await client.get("/")
+        assert root.status_code == 200
+        assert "docs" not in root.json()["endpoints"]
+
+    monkeypatch.delenv("ENABLE_API_DOCS")
+    reload(api_main)

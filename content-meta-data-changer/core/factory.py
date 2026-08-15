@@ -34,17 +34,27 @@ def factory_output_name(source: Path, metadata: Path) -> str:
 
 
 def normalize_output_name(requested: str, metadata: Path, fallback_stem: str) -> str:
-    """Force a user-supplied result name to carry the donor's extension.
+    """Force a user-supplied result name to carry the donor's extension exactly once.
 
     The extension decides how the file is actually written, so a name like
-    "holiday.png" against a JPEG donor would produce a mislabelled file. Only
-    the stem is taken from the request.
+    "holiday.png" against a JPEG donor would produce a mislabelled file — any
+    other extension is replaced. A name that already ends in the right
+    extension is left alone, so "IMG_0118.HEIC" does not become
+    "IMG_0118.HEIC.heic".
     """
-    stem = Path(requested).name.strip()
-    stem = Path(stem).stem.strip() if stem else ""
-    if not stem:
-        stem = fallback_stem
-    return f"{stem}{metadata.suffix.lower()}"
+    suffix = metadata.suffix.lower()
+    name = Path(requested).name.strip()
+
+    if not name:
+        return f"{fallback_stem}{suffix}"
+
+    if suffix and name.lower().endswith(suffix):
+        # Already correctly named; keep the user's capitalisation.
+        stem = name[: -len(suffix)].strip()
+        return f"{stem or fallback_stem}{name[len(name) - len(suffix):]}"
+
+    stem = Path(name).stem.strip()
+    return f"{stem or fallback_stem}{suffix}"
 
 
 def build_factory_result(

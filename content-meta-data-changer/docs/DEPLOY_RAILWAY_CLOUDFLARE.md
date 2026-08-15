@@ -96,7 +96,8 @@ In Railway → **Variables**, add:
 | `GOOGLE_CLIENT_ID`       | *(from Google Console)*                                               |                                                         |
 | `GOOGLE_CLIENT_SECRET`   | *(from Google Console)*                                               | Mark as secret                                          |
 | `GOOGLE_REDIRECT_URI`    | `https://YOUR-RAILWAY-URL.up.railway.app/api/v1/auth/google/callback` | Must match Google Console exactly                       |
-| `AUTH_SECRET`            | *(random string)*                                                     | e.g. `openssl rand -base64 32`                          |
+| `ENABLE_API_DOCS`        | `0`                                                                   | Hides `/docs`, `/redoc`, `/openapi.json` from the public |
+| `AUTH_SECRET`            | *(random string)*                                                     | Reserved — nothing is signed with it today              |
 | `AUTH_COOKIE_SECURE`     | `1`                                                                   | Required for HTTPS                                      |
 | `AUTH_COOKIE_SAMESITE`   | `none`                                                                | Required when frontend and API are on different domains |
 | `AUTH_SESSION_TTL_HOURS` | `168`                                                                 | 7 days                                                  |

@@ -64,6 +64,26 @@ function suggestedStem(source: StoredFile | null): string {
   return `${source.filename.replace(/\.[^.]+$/, "")}_ofm`;
 }
 
+/** True when the typed name already carries the target extension. */
+function alreadyHasExtension(name: string, extension: string): boolean {
+  return extension !== "" && name.toLowerCase().endsWith(extension);
+}
+
+/**
+ * Give the name exactly one trailing extension — the donor's.
+ *
+ * Must match `normalize_output_name` on the server, which has the final say;
+ * if they disagree the download arrives under a different name than shown.
+ * Already correct: "IMG_0118.HEIC" + .heic -> "IMG_0118.HEIC".
+ * Wrong extension:  "IMG_0118.jpg"  + .heic -> "IMG_0118.heic".
+ */
+function withExtension(name: string, extension: string): string {
+  if (!extension || alreadyHasExtension(name, extension)) {
+    return name;
+  }
+  return `${name.replace(/\.[^.]+$/, "")}${extension}`;
+}
+
 export default function FactoryPage() {
   const navigate = useNavigate();
   const { authReady, authRequired, canUseApp, user, sessionId, error: sessionError, logout } = useSession();
@@ -130,7 +150,7 @@ export default function FactoryPage() {
     updatePiece(piece.id, (current) => ({ ...current, status: "generating", error: null }));
 
     const stem = piece.outputStem.trim() || suggestedStem(source);
-    const filename = `${stem}${extensionOf(metadata)}`;
+    const filename = withExtension(stem, extensionOf(metadata));
 
     try {
       const job = await startFactoryJob(source.file_id, metadata.file_id, filename);
@@ -303,7 +323,11 @@ export default function FactoryPage() {
                             disabled={busy}
                             spellCheck={false}
                           />
-                          <span className="output-name-ext">{extensionOf(metadata) || "…"}</span>
+                          {/* Hide the suffix once the typed name carries it,
+                              otherwise the field reads as a double extension. */}
+                          {!alreadyHasExtension(piece.outputStem.trim(), extensionOf(metadata)) && (
+                            <span className="output-name-ext">{extensionOf(metadata) || "…"}</span>
+                          )}
                         </span>
                       </label>
                     </div>
