@@ -18,6 +18,7 @@ import {
   type StoredFile,
 } from "./api/client";
 import AppHeader from "./AppHeader";
+import ConnectionError from "./ConnectionError";
 import MemoryLayoutPanel from "./MemoryLayoutPanel";
 import TransferMetadataModal from "./TransferMetadataModal";
 import { useSession } from "./useSession";
@@ -32,7 +33,7 @@ type AppProps = {
 export default function App() {
   const navigate = useNavigate();
   const { fileId } = useParams();
-  const { authReady, authRequired, canUseApp, user, sessionId, logout } = useSession();
+  const { authReady, authRequired, canUseApp, user, sessionId, error: sessionError, logout } = useSession();
   const [files, setFiles] = useState<StoredFile[]>([]);
   const [metadata, setMetadata] = useState<MetadataResult | null>(null);
   const [layout, setLayout] = useState<LayoutResult | null>(null);
@@ -161,7 +162,9 @@ export default function App() {
         showBackLink
       />
 
-      {authReady && !canUseApp ? (
+      {authReady && sessionError ? (
+        <ConnectionError message={sessionError} />
+      ) : authReady && !canUseApp ? (
         <section className="panel auth-panel">
           <h2>Sign in required</h2>
           <p>Sign in with your Google account to upload files and run metadata jobs.</p>

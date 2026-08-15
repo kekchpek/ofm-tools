@@ -177,6 +177,25 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def service_root() -> dict[str, object]:
+    """Payload for ``GET /``.
+
+    The API mounts everything under /api/v1, so the bare domain used to answer
+    with a naked 404 that reads like a broken deploy. Point at the useful URLs
+    instead, and report whether sign-in is switched on.
+    """
+    return {
+        "service": "Content Metadata Changer API",
+        "status": "ok",
+        "auth_enabled": auth_config().enabled,
+        "endpoints": {
+            "health": "/api/v1/health",
+            "auth_config": "/api/v1/auth/config",
+            "docs": "/docs",
+        },
+    }
+
+
 @router.post("/sessions", response_model=SessionDTO, status_code=201)
 def create_upload_session(
     response: Response,

@@ -9,6 +9,7 @@ import {
   type StoredFile,
 } from "./api/client";
 import AppHeader from "./AppHeader";
+import ConnectionError from "./ConnectionError";
 import DropSlot from "./DropSlot";
 import FilePreview from "./FilePreview";
 import { useSession } from "./useSession";
@@ -65,7 +66,7 @@ function suggestedStem(source: StoredFile | null): string {
 
 export default function FactoryPage() {
   const navigate = useNavigate();
-  const { authReady, authRequired, canUseApp, user, sessionId, logout } = useSession();
+  const { authReady, authRequired, canUseApp, user, sessionId, error: sessionError, logout } = useSession();
   const [pieces, setPieces] = useState<ContentPiece[]>([newPiece(1)]);
 
   const updatePiece = useCallback((id: string, patch: (piece: ContentPiece) => ContentPiece) => {
@@ -184,6 +185,8 @@ export default function FactoryPage() {
         <section className="panel">
           <p>Loading…</p>
         </section>
+      ) : sessionError ? (
+        <ConnectionError message={sessionError} />
       ) : !canUseApp ? (
         <section className="panel auth-panel">
           <h2>Sign in required</h2>

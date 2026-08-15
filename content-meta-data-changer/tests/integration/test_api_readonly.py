@@ -44,6 +44,17 @@ async def test_health(client):
 
 
 @pytest.mark.anyio
+async def test_root_describes_the_service(client):
+    """The bare domain is the first thing people open after a deploy."""
+    response = await client.get("/")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["endpoints"]["health"] == "/api/v1/health"
+    assert "auth_enabled" in body
+
+
+@pytest.mark.anyio
 async def test_upload_and_inspect(client, video6_target):
     session = await client.post("/api/v1/sessions")
     session_id = session.json()["session_id"]

@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.auth import auth_enabled, generate_auth_secret_if_missing, google_redirect_uri
 from api.cleanup import run_periodic_cleanup, run_session_cleanup
 from api.database import initialize_database
-from api.routes import router
+from api.routes import router, service_root
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 generate_auth_secret_if_missing()
@@ -54,6 +54,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(router)
+
+    @app.get("/", include_in_schema=False)
+    def root() -> dict[str, object]:
+        return service_root()
+
     return app
 
 

@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { loginUrl } from "./api/client";
 import AppHeader from "./AppHeader";
+import ConnectionError from "./ConnectionError";
 import { useSession } from "./useSession";
 
 type Tool = {
@@ -32,7 +33,7 @@ const TOOLS: Tool[] = [
 
 export default function HomePage() {
   const navigate = useNavigate();
-  const { authReady, authRequired, canUseApp, user, logout } = useSession();
+  const { authReady, authRequired, canUseApp, user, error: sessionError, logout } = useSession();
 
   async function handleLogout() {
     await logout();
@@ -54,6 +55,8 @@ export default function HomePage() {
         <section className="panel">
           <p>Loading…</p>
         </section>
+      ) : sessionError ? (
+        <ConnectionError message={sessionError} />
       ) : !canUseApp ? (
         <section className="panel auth-panel">
           <h2>Sign in required</h2>

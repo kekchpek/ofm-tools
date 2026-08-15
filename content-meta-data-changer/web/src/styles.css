@@ -1118,3 +1118,32 @@ button {
   font-size: 13px;
   white-space: nowrap;
 }
+
+.connection-error {
+  border-color: #e53935;
+}
+
+.connection-error h2 {
+  margin-top: 0;
+  color: #ef9a9a;
+}
+
+.connection-error-message {
+  color: #d4d4d4;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.connection-error-hint {
+  color: #9d9d9d;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.connection-error-hint code {
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}

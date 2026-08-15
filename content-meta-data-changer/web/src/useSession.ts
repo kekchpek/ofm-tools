@@ -16,8 +16,14 @@ export type SessionState = {
   /** True once sign-in requirements (if any) are satisfied. */
   canUseApp: boolean;
   authRequired: boolean;
+  /** Set when the API could not be reached or answered unexpectedly. */
+  error: string | null;
   logout: () => Promise<void>;
 };
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * Auth config, signed-in user, and an upload session.
@@ -30,14 +36,28 @@ export function useSession(): SessionState {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void Promise.all([getAuthConfig(), getCurrentUser()])
-      .then(([config, currentUser]) => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [config, currentUser] = await Promise.all([getAuthConfig(), getCurrentUser()]);
+        if (cancelled) return;
         setAuthConfig(config);
         setUser(currentUser);
-      })
-      .finally(() => setAuthReady(true));
+        setError(null);
+      } catch (cause) {
+        // Without this the app would silently behave as if auth were disabled
+        // and then fail later with a confusing "session is not ready".
+        if (!cancelled) setError(describe(cause));
+      } finally {
+        if (!cancelled) setAuthReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -48,7 +68,19 @@ export function useSession(): SessionState {
       setSessionId(null);
       return;
     }
-    void createSession().then(setSessionId);
+    let cancelled = false;
+    void createSession()
+      .then((id) => {
+        if (cancelled) return;
+        setSessionId(id);
+        setError(null);
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(describe(cause));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [authReady, authConfig?.enabled, user]);
 
   const logout = useCallback(async () => {
@@ -65,7 +97,9 @@ export function useSession(): SessionState {
     authReady,
     sessionId,
     authRequired,
-    canUseApp: !authRequired || user !== null,
+    error,
+    // A failed auth lookup must not read as "no sign-in needed".
+    canUseApp: error === null && (!authRequired || user !== null),
     logout,
   };
 }

@@ -66,13 +66,54 @@ function fetchOptions(init?: RequestInit): RequestInit {
   };
 }
 
+/**
+ * fetch() with deployment-aware error messages.
+ *
+ * A misconfigured deploy fails in two ways that are invisible by default:
+ * a blocked cross-origin request rejects with a bare "Failed to fetch", and a
+ * missing VITE_API_BASE sends API calls back to the frontend host, where the
+ * SPA rewrite answers with index.html and HTTP 200.
+ */
+function currentOrigin(): string {
+  return typeof window === "undefined" ? "this site's origin" : window.location.origin;
+}
+
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const url = `${API_BASE}${path}`;
+  try {
+    return await fetch(url, fetchOptions(init));
+  } catch (cause) {
+    throw new Error(
+      `Could not reach the API at ${url}. ` +
+        `This is normally a CORS or network problem — check that CORS_ORIGINS on the API ` +
+        `includes ${currentOrigin()}, and that the API is reachable over HTTPS. (${cause})`,
+    );
+  }
+}
+
+async function readJson<T>(response: Response, url: string): Promise<T> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    return response.json() as Promise<T>;
+  }
+  const body = await response.text();
+  if (body.trimStart().startsWith("<")) {
+    throw new Error(
+      `${url} returned an HTML page instead of JSON. The app is calling itself rather than ` +
+        `the API — set VITE_API_BASE to the API URL and rebuild (Vite bakes it in at build time, ` +
+        `so changing the variable alone is not enough).`,
+    );
+  }
+  throw new Error(`${url} returned "${contentType || "no content type"}" instead of JSON.`);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, fetchOptions(init));
+  const response = await apiFetch(path, init);
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(detail || response.statusText);
   }
-  return response.json() as Promise<T>;
+  return readJson<T>(response, `${API_BASE}${path}`);
 }
 
 export async function getAuthConfig(): Promise<AuthConfig> {
@@ -80,14 +121,14 @@ export async function getAuthConfig(): Promise<AuthConfig> {
 }
 
 export async function getCurrentUser(): Promise<User | null> {
-  const response = await fetch(`${API_BASE}/api/v1/auth/me`, fetchOptions());
+  const response = await apiFetch("/api/v1/auth/me");
   if (response.status === 401) {
     return null;
   }
   if (!response.ok) {
     throw new Error(await response.text());
   }
-  return response.json() as Promise<User>;
+  return readJson<User>(response, `${API_BASE}/api/v1/auth/me`);
 }
 
 export function loginUrl(returnPath = "/"): string {
@@ -107,14 +148,12 @@ export async function createSession(): Promise<string> {
 export async function uploadFile(sessionId: string, file: File): Promise<StoredFile> {
   const form = new FormData();
   form.append("file", file);
-  const response = await fetch(`${API_BASE}/api/v1/sessions/${sessionId}/files`, fetchOptions({
-    method: "POST",
-    body: form,
-  }));
+  const path = `/api/v1/sessions/${sessionId}/files`;
+  const response = await apiFetch(path, { method: "POST", body: form });
   if (!response.ok) {
     throw new Error(await response.text());
   }
-  return response.json();
+  return readJson<StoredFile>(response, `${API_BASE}${path}`);
 }
 
 export function getMetadata(fileId: string): Promise<MetadataResult> {
