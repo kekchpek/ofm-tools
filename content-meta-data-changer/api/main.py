@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.auth import auth_enabled, generate_auth_secret_if_missing, google_redirect_uri
-from api.cleanup import run_session_cleanup
+from api.cleanup import run_periodic_cleanup, run_session_cleanup
 from api.database import initialize_database
 from api.routes import router
 
@@ -30,7 +32,15 @@ async def lifespan(_app: FastAPI):
         print("Google OAuth is enabled.")
         print("  Register this Authorized redirect URI in Google Cloud Console:")
         print(f"    {redirect_uri}")
-    yield
+    else:
+        print("Google OAuth is not configured — uploads are scoped to an anonymous browser cookie.")
+    cleanup_task = asyncio.create_task(run_periodic_cleanup())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cleanup_task
 
 
 def create_app() -> FastAPI:

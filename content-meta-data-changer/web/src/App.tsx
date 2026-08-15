@@ -287,7 +287,15 @@ export default function App() {
         <section className="editor-grid">
           <div className="panel">
             <h2>Preview</h2>
-            <img className="preview-image" src={previewUrl(fileId)} alt="Preview" />
+            {/* use-credentials so the session cookie is sent when the API is
+                on a different domain than the frontend; the endpoint checks
+                session ownership and would otherwise 403. */}
+            <img
+              className="preview-image"
+              src={previewUrl(fileId)}
+              alt="Preview"
+              crossOrigin="use-credentials"
+            />
           </div>
 
           <div className="panel">

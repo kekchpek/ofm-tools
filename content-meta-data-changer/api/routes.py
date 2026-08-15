@@ -10,14 +10,18 @@ from pydantic import BaseModel, Field
 
 from api.auth import (
     assert_file_access,
+    assert_session_access,
     auth_config,
     build_google_login_url,
     clear_session_cookie,
     complete_google_login,
+    get_client_id_optional,
     get_current_user_optional,
-    register_session_for_user,
+    new_client_id,
+    register_session_owner,
     require_user_or_anonymous,
     safe_return_url,
+    set_client_cookie,
     set_session_cookie,
     user_to_dto,
 )
@@ -89,21 +93,22 @@ def _storage_http_error(exc: StorageError) -> HTTPException:
 def get_stored_file(
     file_id: str,
     user: UserRecord | None = Depends(get_current_user_optional),
+    client_id: str | None = Depends(get_client_id_optional),
 ):
     try:
         stored = get_file(file_id)
     except StorageError as exc:
         raise _storage_http_error(exc) from exc
-    assert_file_access(stored.session_id, user)
+    assert_file_access(stored.session_id, user, client_id)
     return stored
 
 
-def ensure_file_access(file_id: str, user: UserRecord | None) -> None:
+def ensure_file_access(file_id: str, user: UserRecord | None, client_id: str | None) -> None:
     try:
         stored = get_file(file_id)
     except StorageError as exc:
         raise _storage_http_error(exc) from exc
-    assert_file_access(stored.session_id, user)
+    assert_file_access(stored.session_id, user, client_id)
 
 
 @router.get("/auth/config", response_model=AuthConfigDTO)
@@ -167,11 +172,18 @@ def health() -> dict[str, str]:
 
 @router.post("/sessions", response_model=SessionDTO, status_code=201)
 def create_upload_session(
+    response: Response,
     user: UserRecord | None = Depends(require_user_or_anonymous),
+    client_id: str | None = Depends(get_client_id_optional),
 ) -> SessionDTO:
+    if user is None:
+        # Anonymous callers get a durable cookie so later requests can prove
+        # they own the sessions they created.
+        if client_id is None:
+            client_id = new_client_id()
+        set_client_cookie(response, client_id)
     session_id = create_session()
-    if user is not None:
-        register_session_for_user(session_id, user)
+    register_session_owner(session_id, user, client_id)
     return SessionDTO(session_id=session_id)
 
 
@@ -180,8 +192,9 @@ async def upload_file(
     session_id: str,
     file: UploadFile = File(...),
     user: UserRecord | None = Depends(require_user_or_anonymous),
+    client_id: str | None = Depends(get_client_id_optional),
 ) -> StoredFileDTO:
-    assert_file_access(session_id, user)
+    assert_file_access(session_id, user, client_id)
     data = await file.read()
     if len(data) > _max_upload_bytes():
         raise HTTPException(
@@ -265,9 +278,10 @@ def download_file(stored=Depends(get_stored_file)) -> StreamingResponse:
 def start_transfer_job(
     body: TransferJobRequest,
     user: UserRecord | None = Depends(require_user_or_anonymous),
+    client_id: str | None = Depends(get_client_id_optional),
 ) -> JobResult:
-    ensure_file_access(body.target_file_id, user)
-    ensure_file_access(body.source_file_id, user)
+    ensure_file_access(body.target_file_id, user, client_id)
+    ensure_file_access(body.source_file_id, user, client_id)
     try:
         record = create_transfer_job(body.target_file_id, body.source_file_id, body.output_filename)
     except StorageError as exc:
@@ -279,8 +293,9 @@ def start_transfer_job(
 def start_convert_job(
     body: ConvertJobRequest,
     user: UserRecord | None = Depends(require_user_or_anonymous),
+    client_id: str | None = Depends(get_client_id_optional),
 ) -> JobResult:
-    ensure_file_access(body.source_file_id, user)
+    ensure_file_access(body.source_file_id, user, client_id)
     try:
         record = create_convert_job(body.source_file_id, body.output_filename, body.target)
     except StorageError as exc:
@@ -292,8 +307,9 @@ def start_convert_job(
 def start_update_preview_job(
     body: UpdatePreviewJobRequest,
     user: UserRecord | None = Depends(require_user_or_anonymous),
+    client_id: str | None = Depends(get_client_id_optional),
 ) -> JobResult:
-    ensure_file_access(body.source_file_id, user)
+    ensure_file_access(body.source_file_id, user, client_id)
     try:
         record = create_update_preview_job(body.source_file_id, body.output_filename)
     except StorageError as exc:
@@ -305,8 +321,12 @@ def start_update_preview_job(
 def job_status(
     job_id: str,
     user: UserRecord | None = Depends(require_user_or_anonymous),
+    client_id: str | None = Depends(get_client_id_optional),
 ) -> JobResult:
     try:
-        return job_to_result(get_job(job_id))
+        record = get_job(job_id)
     except StorageError as exc:
         raise _storage_http_error(exc) from exc
+    if record.session_id is not None:
+        assert_session_access(record.session_id, user, client_id)
+    return job_to_result(record)

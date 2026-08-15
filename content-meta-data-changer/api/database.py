@@ -26,9 +26,90 @@ def database_path() -> Path:
     return path
 
 
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY NOT NULL,
+    google_sub TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL,
+    name TEXT NOT NULL,
+    picture_url TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    token TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+-- An upload session is owned either by a signed-in user (user_id) or by an
+-- anonymous browser identified by a cookie (client_id). Exactly one is set.
+CREATE TABLE IF NOT EXISTS upload_sessions (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT,
+    client_id TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state TEXT PRIMARY KEY NOT NULL,
+    return_url TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+"""
+
+_initialized_paths: set[Path] = set()
+
+
+def _migrate_upload_sessions(connection: sqlite3.Connection) -> None:
+    """Add client_id to pre-anonymous-ownership databases.
+
+    The original table declared ``user_id TEXT NOT NULL`` with a foreign key to
+    users, which cannot hold an anonymous owner. SQLite cannot drop a NOT NULL
+    constraint in place, so the table is rebuilt when the new column is absent.
+    """
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(upload_sessions)")}
+    if not columns or "client_id" in columns:
+        return
+    connection.executescript(
+        """
+        ALTER TABLE upload_sessions RENAME TO upload_sessions_legacy;
+
+        CREATE TABLE upload_sessions (
+            session_id TEXT PRIMARY KEY NOT NULL,
+            user_id TEXT,
+            client_id TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        INSERT INTO upload_sessions (session_id, user_id, client_id, created_at)
+        SELECT session_id, user_id, NULL, created_at FROM upload_sessions_legacy;
+
+        DROP TABLE upload_sessions_legacy;
+        """
+    )
+
+
+def _ensure_schema(path: Path) -> None:
+    if path in _initialized_paths:
+        return
+    connection = sqlite3.connect(path, check_same_thread=False)
+    connection.row_factory = sqlite3.Row
+    try:
+        _migrate_upload_sessions(connection)
+        connection.executescript(SCHEMA)
+        connection.commit()
+    finally:
+        connection.close()
+    _initialized_paths.add(path)
+
+
 @contextmanager
 def connect():
-    connection = sqlite3.connect(database_path(), check_same_thread=False)
+    path = database_path()
+    _ensure_schema(path)
+    connection = sqlite3.connect(path, check_same_thread=False)
     connection.row_factory = sqlite3.Row
     try:
         yield connection
@@ -38,39 +119,7 @@ def connect():
 
 
 def initialize_database() -> None:
-    with connect() as connection:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY NOT NULL,
-                google_sub TEXT NOT NULL UNIQUE,
-                email TEXT NOT NULL,
-                name TEXT NOT NULL,
-                picture_url TEXT,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS auth_sessions (
-                token TEXT PRIMARY KEY NOT NULL,
-                user_id TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES users(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS upload_sessions (
-                session_id TEXT PRIMARY KEY NOT NULL,
-                user_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES users(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS oauth_states (
-                state TEXT PRIMARY KEY NOT NULL,
-                return_url TEXT NOT NULL,
-                expires_at TEXT NOT NULL
-            );
-            """
-        )
+    _ensure_schema(database_path())
 
 
 def upsert_google_user(*, google_sub: str, email: str, name: str, picture_url: str | None) -> UserRecord:
@@ -160,26 +209,50 @@ def get_user_for_auth_token(token: str) -> UserRecord | None:
     )
 
 
-def register_upload_session(session_id: str, user_id: str) -> None:
+@dataclass(frozen=True)
+class UploadSessionOwner:
+    user_id: str | None
+    client_id: str | None
+
+
+def register_upload_session(
+    session_id: str,
+    *,
+    user_id: str | None = None,
+    client_id: str | None = None,
+) -> None:
     with connect() as connection:
         connection.execute(
             """
-            INSERT OR REPLACE INTO upload_sessions (session_id, user_id, created_at)
-            VALUES (?, ?, ?)
+            INSERT OR REPLACE INTO upload_sessions (session_id, user_id, client_id, created_at)
+            VALUES (?, ?, ?, ?)
             """,
-            (session_id, user_id, datetime.now(UTC).isoformat()),
+            (session_id, user_id, client_id, datetime.now(UTC).isoformat()),
         )
 
 
-def upload_session_owner(session_id: str) -> str | None:
+def upload_session_owner(session_id: str) -> UploadSessionOwner | None:
     with connect() as connection:
         row = connection.execute(
-            "SELECT user_id FROM upload_sessions WHERE session_id = ?",
+            "SELECT user_id, client_id FROM upload_sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
     if row is None:
         return None
-    return str(row["user_id"])
+    return UploadSessionOwner(
+        user_id=str(row["user_id"]) if row["user_id"] else None,
+        client_id=str(row["client_id"]) if row["client_id"] else None,
+    )
+
+
+def delete_upload_sessions(session_ids: list[str]) -> None:
+    if not session_ids:
+        return
+    with connect() as connection:
+        connection.executemany(
+            "DELETE FROM upload_sessions WHERE session_id = ?",
+            [(session_id,) for session_id in session_ids],
+        )
 
 
 def create_oauth_state(return_url: str, *, ttl_minutes: int = 10) -> str:

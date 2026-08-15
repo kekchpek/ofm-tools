@@ -39,6 +39,7 @@ class JobRecord:
     type: JobType
     status: JobStatus
     created_at: datetime
+    session_id: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     error: str | None = None
@@ -85,6 +86,7 @@ def create_transfer_job(
         type=JobType.transfer,
         status=JobStatus.queued,
         created_at=_now(),
+        session_id=get_file(target_file_id).session_id,
         params={
             "target_file_id": target_file_id,
             "source_file_id": source_file_id,
@@ -103,6 +105,7 @@ def create_convert_job(source_file_id: str, output_filename: str, target: str) -
         type=JobType.convert,
         status=JobStatus.queued,
         created_at=_now(),
+        session_id=get_file(source_file_id).session_id,
         params={
             "source_file_id": source_file_id,
             "output_filename": output_filename,
@@ -121,6 +124,7 @@ def create_update_preview_job(source_file_id: str, output_filename: str) -> JobR
         type=JobType.update_preview,
         status=JobStatus.queued,
         created_at=_now(),
+        session_id=get_file(source_file_id).session_id,
         params={
             "source_file_id": source_file_id,
             "output_filename": output_filename,

@@ -156,12 +156,15 @@ def delete_session(session_id: str) -> None:
 
 
 def cleanup_expired_sessions(max_age_hours: int) -> int:
-    removed = 0
+    from api.database import delete_upload_sessions
+
+    expired: list[str] = []
     cutoff = datetime.now(UTC).timestamp() - max_age_hours * 3600
     for session_path in upload_root().iterdir():
         if not session_path.is_dir():
             continue
         if session_path.stat().st_mtime < cutoff:
-            shutil.rmtree(session_path)
-            removed += 1
-    return removed
+            shutil.rmtree(session_path, ignore_errors=True)
+            expired.append(session_path.name)
+    delete_upload_sessions(expired)
+    return len(expired)

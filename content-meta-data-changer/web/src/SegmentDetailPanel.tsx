@@ -25,51 +25,51 @@ const EDIT_SAFETY_COLORS: Record<string, string> = {
   unsafe: "#e53935",
 };
 
+function formatBytes(size: number): string {
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  if (size < 1024 * 1024 * 1024) {
+    return `${(size / (1024 * 1024)).toFixed(2)} MB`;
+  }
+  return `${(size / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+type SegmentBytes = { hex: string; text: string };
+
 type SegmentDetailPanelProps = {
   fileId: string;
   segment: Segment;
 };
 
-function formatBytes(size: number): string {
-  if (size < 1024) {
-    return `${size} bytes`;
-  }
-  if (size < 1024 * 1024) {
-    return `${(size / 1024).toFixed(1)} KB (${size.toLocaleString()} bytes)`;
-  }
-  return `${(size / (1024 * 1024)).toFixed(2)} MB (${size.toLocaleString()} bytes)`;
-}
-
 export default function SegmentDetailPanel({ fileId, segment }: SegmentDetailPanelProps) {
-  const [hexPreview, setHexPreview] = useState("");
-  const [textPreview, setTextPreview] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [bytes, setBytes] = useState<SegmentBytes | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    setIsLoading(true);
-    setLoadError(null);
-    setHexPreview("");
-    setTextPreview("");
+    setBytes(null);
+    setError(null);
+    setLoading(true);
 
-    void getSegmentBytes(fileId, segment.offset)
+    getSegmentBytes(fileId, segment.offset)
       .then((result) => {
-        if (cancelled) {
-          return;
+        if (!cancelled) {
+          setBytes(result);
         }
-        setHexPreview(result.hex);
-        setTextPreview(result.text);
       })
-      .catch((error) => {
-        if (cancelled) {
-          return;
+      .catch((cause: unknown) => {
+        if (!cancelled) {
+          setError(cause instanceof Error ? cause.message : String(cause));
         }
-        setLoadError(String(error));
       })
       .finally(() => {
         if (!cancelled) {
-          setIsLoading(false);
+          setLoading(false);
         }
       });
 
@@ -78,67 +78,66 @@ export default function SegmentDetailPanel({ fileId, segment }: SegmentDetailPan
     };
   }, [fileId, segment.offset]);
 
-  const categoryLabel = CATEGORY_LABELS[segment.category] ?? segment.category;
   const categoryColor = CATEGORY_COLORS[segment.category] ?? "#777777";
-  const safetyColor = EDIT_SAFETY_COLORS[segment.edit_safety.level] ?? "#ffa726";
+  const safetyColor = EDIT_SAFETY_COLORS[segment.edit_safety.level] ?? "#999999";
 
   return (
-    <article className="segment-detail">
-      <header className="segment-detail-header">
+    <div className="segment-detail">
+      <div className="segment-detail-header">
         <h3 className="segment-detail-title">{segment.label}</h3>
         <div className="segment-detail-badges">
-          <span
-            className="segment-detail-badge segment-detail-badge-category"
-            style={{ borderColor: categoryColor, color: categoryColor }}
-          >
-            {categoryLabel}
+          <span className="segment-detail-badge" style={{ borderColor: categoryColor, color: categoryColor }}>
+            {CATEGORY_LABELS[segment.category] ?? segment.category}
           </span>
-          <span
-            className="segment-detail-badge segment-detail-badge-safety"
-            style={{ borderColor: safetyColor, color: safetyColor }}
-          >
+          <span className="segment-detail-badge" style={{ borderColor: safetyColor, color: safetyColor }}>
             {segment.edit_safety.mark} {segment.edit_safety.label}
           </span>
         </div>
-      </header>
+      </div>
 
       <dl className="segment-detail-meta">
         <div className="segment-detail-meta-row">
-          <dt>Path</dt>
-          <dd>{segment.path_label}</dd>
-        </div>
-        <div className="segment-detail-meta-row">
           <dt>Offset</dt>
           <dd>
-            0x{segment.offset.toString(16)} – 0x{segment.end.toString(16)}
+            0x{segment.offset.toString(16)} ({segment.offset})
           </dd>
         </div>
         <div className="segment-detail-meta-row">
           <dt>Size</dt>
-          <dd>{formatBytes(segment.size)}</dd>
+          <dd>
+            {formatBytes(segment.size)} ({segment.size} bytes)
+          </dd>
+        </div>
+        <div className="segment-detail-meta-row">
+          <dt>End</dt>
+          <dd>
+            0x{segment.end.toString(16)} ({segment.end})
+          </dd>
+        </div>
+        <div className="segment-detail-meta-row">
+          <dt>Path</dt>
+          <dd>{segment.path_label || segment.path.join(" / ") || "—"}</dd>
         </div>
       </dl>
 
       <section className="segment-detail-section">
-        <h4 className="segment-detail-section-title">Description</h4>
+        <h4 className="segment-detail-section-title">Edit safety</h4>
         <p className="segment-detail-description">{segment.edit_safety.reason}</p>
       </section>
 
       <section className="segment-detail-section">
-        <h4 className="segment-detail-section-title">Binary</h4>
-        <p className="segment-detail-section-hint">Hex dump of the first bytes in this segment.</p>
-        <pre className="segment-detail-code">
-          {loadError ?? (isLoading ? "Loading..." : hexPreview || "(empty segment)")}
-        </pre>
+        <h4 className="segment-detail-section-title">Bytes</h4>
+        <p className="segment-detail-section-hint">First 512 bytes of the segment.</p>
+        {loading && <p className="segment-detail-section-hint">Loading bytes…</p>}
+        {error && <p className="segment-detail-section-hint">Could not load bytes: {error}</p>}
+        {bytes && (
+          <>
+            <pre className="segment-detail-code">{bytes.hex}</pre>
+            <h4 className="segment-detail-section-title">Text</h4>
+            <pre className="segment-detail-code">{bytes.text}</pre>
+          </>
+        )}
       </section>
-
-      <section className="segment-detail-section">
-        <h4 className="segment-detail-section-title">Text</h4>
-        <p className="segment-detail-section-hint">Printable characters found in those bytes.</p>
-        <pre className="segment-detail-code">
-          {loadError ? "—" : isLoading ? "Loading..." : textPreview || "(no printable text)"}
-        </pre>
-      </section>
-    </article>
+    </div>
   );
 }

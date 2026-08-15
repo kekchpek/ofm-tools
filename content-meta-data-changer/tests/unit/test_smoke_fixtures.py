@@ -42,8 +42,11 @@ def test_video6_metadata_non_empty(video6_target: Path) -> None:
     ["video6_source", "video6_output", "heic_source"],
 )
 def test_optional_fixtures_skip_when_missing(fixture_name: str, request: pytest.FixtureRequest) -> None:
+    # pytest.skip() raises Skipped, exposed as pytest.skip.Exception. There is no
+    # pytest.SkipException, so catching that name turned every missing fixture
+    # into an AttributeError failure instead of a skip.
     try:
         path = request.getfixturevalue(fixture_name)
-    except pytest.SkipException:
+    except pytest.skip.Exception:
         pytest.skip(f"{fixture_name} unavailable")
     assert path.is_file()

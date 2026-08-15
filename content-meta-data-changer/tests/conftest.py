@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OFM_CONTENT = (REPO_ROOT.parent / "OfmContent").resolve()
+# OfmContent is sample media kept outside version control. Override the location
+# with OFM_CONTENT_DIR; tests that need it skip when it is missing (e.g. in CI).
+OFM_CONTENT = Path(os.environ.get("OFM_CONTENT_DIR", REPO_ROOT.parent / "OfmContent")).resolve()
 
 
 def _optional_fixture(path: Path) -> Path:
@@ -59,3 +62,17 @@ def tmp_media(tmp_path: Path) -> Path:
     directory = tmp_path / "media"
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+@pytest.fixture
+def synthetic_png(tmp_path: Path) -> Path:
+    """A real image built on the fly.
+
+    Tests that must run in CI use this instead of the ``OfmContent`` fixtures,
+    which are not checked into the repository.
+    """
+    from PIL import Image
+
+    path = tmp_path / "synthetic_fixture.png"
+    Image.new("RGB", (48, 32), (120, 60, 200)).save(path, format="PNG")
+    return path

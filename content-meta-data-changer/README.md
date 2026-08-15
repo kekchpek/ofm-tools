@@ -90,6 +90,8 @@ bash scripts/qa_web_flow.sh
 | `MAX_UPLOAD_BYTES` | `524288000` | Upload size limit |
 | `CORS_ORIGINS` | localhost:5173 | Allowed browser origins |
 | `SESSION_TTL_HOURS` | `24` | Temp file retention target |
+| `CLEANUP_INTERVAL_MINUTES` | `60` | How often expired sessions are swept |
+| `OFM_CONTENT_DIR` | `../OfmContent` | Sample media used by tests |
 | `GOOGLE_CLIENT_ID` | — | Enables Google sign-in when set with secret |
 | `GOOGLE_CLIENT_SECRET` | — | Google OAuth client secret (keep in `.env` only) |
 | `GOOGLE_REDIRECT_URI` | `http://localhost:5173/api/v1/auth/google/callback` | Must match Google Cloud Console |
@@ -101,6 +103,17 @@ bash scripts/qa_web_flow.sh
 | `VITE_API_BASE` | *(empty)* | Cloudflare Pages build: Railway API URL |
 
 Copy `.env.example` to `.env` and fill in Google OAuth credentials. When OAuth env vars are set, uploads and jobs require sign-in.
+
+### Access control
+
+Every upload session is owned, and ownership is checked on every file and job request:
+
+- **OAuth configured** — the session belongs to the signed-in user.
+- **OAuth not configured** — the session belongs to an anonymous browser identified by the `cmc_client` cookie, set on `POST /api/v1/sessions`.
+
+Either way, a client that knows another client's `file_id` gets `403`. Non-browser clients must therefore keep cookies across requests (`curl -c jar -b jar`, `httpx.Client()`); a bare request with no cookie can create its own session but cannot reach anyone else's.
+
+OAuth remains strongly recommended in production — the anonymous cookie identifies a browser, not a person, and offers no way to revoke access or attribute activity.
 
 ### Google OAuth setup (fix “doesn't comply with OAuth 2.0 policy”)
 

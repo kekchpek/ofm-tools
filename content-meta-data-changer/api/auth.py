@@ -23,6 +23,8 @@ from api.database import (
 from core.models import AuthConfigDTO, UserDTO
 
 SESSION_COOKIE_NAME = "cmc_session"
+CLIENT_COOKIE_NAME = "cmc_client"
+CLIENT_COOKIE_MAX_AGE = 30 * 24 * 3600
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
@@ -97,6 +99,29 @@ def clear_session_cookie(response) -> None:
     )
 
 
+def new_client_id() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def set_client_cookie(response, client_id: str) -> None:
+    response.set_cookie(
+        key=CLIENT_COOKIE_NAME,
+        value=client_id,
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite=_cookie_samesite(),
+        max_age=CLIENT_COOKIE_MAX_AGE,
+        path="/",
+    )
+
+
+def get_client_id_optional(
+    cmc_client: str | None = Cookie(default=None),
+) -> str | None:
+    """Anonymous browser identity used to scope upload sessions when OAuth is off."""
+    return cmc_client or None
+
+
 def get_current_user_optional(
     cmc_session: str | None = Cookie(default=None),
 ) -> UserRecord | None:
@@ -132,23 +157,52 @@ def require_user_or_anonymous(
     return user
 
 
-def assert_session_access(session_id: str, user: UserRecord | None) -> None:
-    if not auth_enabled():
+def _forbidden() -> HTTPException:
+    return HTTPException(
+        status_code=403,
+        detail={"error": "You do not have access to this session.", "code": "forbidden"},
+    )
+
+
+def assert_session_access(
+    session_id: str,
+    user: UserRecord | None,
+    client_id: str | None = None,
+) -> None:
+    """Authorize access to an upload session and everything stored inside it.
+
+    Enforced whether or not OAuth is configured: with OAuth off, sessions are
+    owned by the anonymous client cookie instead, so one browser cannot read
+    another's uploads by guessing a file id.
+    """
+    owner = upload_session_owner(session_id)
+    if owner is None:
+        raise _forbidden()
+    if owner.user_id is not None:
+        if user is None or owner.user_id != user.id:
+            raise _forbidden()
         return
-    owner_id = upload_session_owner(session_id)
-    if owner_id is None or user is None or owner_id != user.id:
-        raise HTTPException(
-            status_code=403,
-            detail={"error": "You do not have access to this session.", "code": "forbidden"},
-        )
+    if owner.client_id is None or client_id is None or not secrets.compare_digest(owner.client_id, client_id):
+        raise _forbidden()
 
 
-def assert_file_access(session_id: str, user: UserRecord | None) -> None:
-    assert_session_access(session_id, user)
+def assert_file_access(
+    session_id: str,
+    user: UserRecord | None,
+    client_id: str | None = None,
+) -> None:
+    assert_session_access(session_id, user, client_id)
 
 
-def register_session_for_user(session_id: str, user: UserRecord) -> None:
-    register_upload_session(session_id, user.id)
+def register_session_owner(
+    session_id: str,
+    user: UserRecord | None,
+    client_id: str | None,
+) -> None:
+    if user is not None:
+        register_upload_session(session_id, user_id=user.id)
+    else:
+        register_upload_session(session_id, client_id=client_id)
 
 
 def build_google_login_url(return_url: str | None = None) -> str:
