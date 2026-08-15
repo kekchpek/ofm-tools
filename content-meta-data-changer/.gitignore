@@ -9,3 +9,4 @@ web/dist/
 .pytest_cache/
 htmlcov/
 .coverage
+web/tsconfig.tsbuildinfo

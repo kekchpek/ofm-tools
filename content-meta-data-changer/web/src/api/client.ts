@@ -38,7 +38,7 @@ export type StoredFile = {
 
 export type JobResult = {
   id: string;
-  type: string;
+  type: "transfer" | "convert" | "update_preview" | "factory";
   status: "queued" | "running" | "succeeded" | "failed";
   error: string | null;
   output_file_id: string | null;
@@ -186,6 +186,26 @@ export async function startConvertJob(
       source_file_id: sourceFileId,
       output_filename: outputFilename,
       target,
+    }),
+  });
+}
+
+/**
+ * OFM Factory: payload from the source file, format and metadata from the donor.
+ * Omit outputFilename to let the server name it `<source>_ofm<donor-ext>`.
+ */
+export async function startFactoryJob(
+  sourceFileId: string,
+  metadataFileId: string,
+  outputFilename?: string,
+): Promise<JobResult> {
+  return request("/api/v1/jobs/factory", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source_file_id: sourceFileId,
+      metadata_file_id: metadataFileId,
+      ...(outputFilename ? { output_filename: outputFilename } : {}),
     }),
   });
 }

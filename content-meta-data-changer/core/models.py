@@ -103,7 +103,7 @@ class AuthConfigDTO(BaseModel):
 
 class JobResult(BaseModel):
     id: str
-    type: Literal["transfer", "convert", "update_preview"]
+    type: Literal["transfer", "convert", "update_preview", "factory"]
     status: Literal["queued", "running", "succeeded", "failed"]
     error: str | None = None
     output_file_id: str | None = None

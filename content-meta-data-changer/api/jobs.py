@@ -15,6 +15,7 @@ from typing import Any
 from api.storage import StorageError, get_file, register_existing_file, session_dir
 from core.convert import convert_image_file, convert_video_file
 from core.errors import ConversionError, PreviewError, TransferError
+from core.factory import build_factory_result, factory_output_name, normalize_output_name
 from core.models import JobResult
 from core.preview import update_embedded_preview
 from core.transfer import transfer_metadata_files
@@ -24,6 +25,7 @@ class JobType(str, Enum):
     transfer = "transfer"
     convert = "convert"
     update_preview = "update_preview"
+    factory = "factory"
 
 
 class JobStatus(str, Enum):
@@ -135,6 +137,43 @@ def create_update_preview_job(source_file_id: str, output_filename: str) -> JobR
     return record
 
 
+def create_factory_job(
+    source_file_id: str,
+    metadata_file_id: str,
+    output_filename: str | None = None,
+) -> JobRecord:
+    source = get_file(source_file_id)
+    metadata = get_file(metadata_file_id)
+    source_name = Path(source.filename)
+    metadata_name = Path(metadata.filename)
+
+    if output_filename:
+        resolved_name = normalize_output_name(
+            output_filename,
+            metadata_name,
+            fallback_stem=f"{source_name.stem}_ofm",
+        )
+    else:
+        resolved_name = factory_output_name(source_name, metadata_name)
+
+    job_id = str(uuid.uuid4())
+    record = JobRecord(
+        id=job_id,
+        type=JobType.factory,
+        status=JobStatus.queued,
+        created_at=_now(),
+        session_id=source.session_id,
+        params={
+            "source_file_id": source_file_id,
+            "metadata_file_id": metadata_file_id,
+            "output_filename": resolved_name,
+        },
+    )
+    _jobs[job_id] = record
+    _dispatch(record, _run_factory)
+    return record
+
+
 def _dispatch(record: JobRecord, runner) -> None:
     if os.environ.get("JOBS_SYNC") == "1":
         runner(record)
@@ -181,6 +220,24 @@ def _run_convert(record: JobRecord) -> None:
             convert_image_file(source.path, output_path, target)
         else:
             raise ConversionError("Unsupported media kind for conversion.")
+        stored = register_existing_file(source.session_id, output_path, record.params["output_filename"])
+        record.output_file_id = stored.file_id
+        record.status = JobStatus.succeeded
+    except Exception as exc:
+        record.status = JobStatus.failed
+        record.error = str(exc)
+    finally:
+        record.finished_at = _now()
+
+
+def _run_factory(record: JobRecord) -> None:
+    record.status = JobStatus.running
+    record.started_at = _now()
+    try:
+        source = get_file(record.params["source_file_id"])
+        metadata = get_file(record.params["metadata_file_id"])
+        output_path = _job_output_path(source.session_id, record.id, record.params["output_filename"])
+        build_factory_result(source.path, metadata.path, output_path)
         stored = register_existing_file(source.session_id, output_path, record.params["output_filename"])
         record.output_file_id = stored.file_id
         record.status = JobStatus.succeeded

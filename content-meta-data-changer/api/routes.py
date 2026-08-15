@@ -28,6 +28,7 @@ from api.auth import (
 from api.database import UserRecord, delete_auth_session
 from api.jobs import (
     create_convert_job,
+    create_factory_job,
     create_transfer_job,
     create_update_preview_job,
     get_job,
@@ -80,6 +81,12 @@ class ConvertJobRequest(BaseModel):
 class UpdatePreviewJobRequest(BaseModel):
     source_file_id: str
     output_filename: str = Field(min_length=1)
+
+
+class FactoryJobRequest(BaseModel):
+    source_file_id: str
+    metadata_file_id: str
+    output_filename: str | None = Field(default=None, min_length=1)
 
 
 def _max_upload_bytes() -> int:
@@ -312,6 +319,25 @@ def start_update_preview_job(
     ensure_file_access(body.source_file_id, user, client_id)
     try:
         record = create_update_preview_job(body.source_file_id, body.output_filename)
+    except StorageError as exc:
+        raise _storage_http_error(exc) from exc
+    return job_to_result(record)
+
+
+@router.post("/jobs/factory", response_model=JobResult, status_code=202)
+def start_factory_job(
+    body: FactoryJobRequest,
+    user: UserRecord | None = Depends(require_user_or_anonymous),
+    client_id: str | None = Depends(get_client_id_optional),
+) -> JobResult:
+    ensure_file_access(body.source_file_id, user, client_id)
+    ensure_file_access(body.metadata_file_id, user, client_id)
+    try:
+        record = create_factory_job(
+            body.source_file_id,
+            body.metadata_file_id,
+            body.output_filename,
+        )
     except StorageError as exc:
         raise _storage_http_error(exc) from exc
     return job_to_result(record)

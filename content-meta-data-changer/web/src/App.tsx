@@ -1,30 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  createSession,
   downloadUrl,
-  getAuthConfig,
-  getCurrentUser,
   getLayout,
   getMetadata,
   getUnknownHeaders,
   getUnknownMemory,
   loginUrl,
-  logout,
   pollJob,
   previewUrl,
   startConvertJob,
   startUpdatePreviewJob,
   uploadFile,
-  type AuthConfig,
   type LayoutResult,
   type MetadataResult,
   type Segment,
   type StoredFile,
-  type User,
 } from "./api/client";
+import AppHeader from "./AppHeader";
 import MemoryLayoutPanel from "./MemoryLayoutPanel";
 import TransferMetadataModal from "./TransferMetadataModal";
+import { useSession } from "./useSession";
 
 const VIDEO_CONVERT_TARGETS = ["mp4", "mov", "mkv", "webm"];
 const IMAGE_CONVERT_TARGETS = ["jpg", "png", "heic"];
@@ -36,10 +32,7 @@ type AppProps = {
 export default function App() {
   const navigate = useNavigate();
   const { fileId } = useParams();
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [authReady, setAuthReady] = useState(false);
+  const { authReady, authRequired, canUseApp, user, sessionId, logout } = useSession();
   const [files, setFiles] = useState<StoredFile[]>([]);
   const [metadata, setMetadata] = useState<MetadataResult | null>(null);
   const [layout, setLayout] = useState<LayoutResult | null>(null);
@@ -55,26 +48,6 @@ export default function App() {
     () => files.find((file) => file.file_id === fileId) ?? null,
     [files, fileId],
   );
-
-  useEffect(() => {
-    void Promise.all([getAuthConfig(), getCurrentUser()])
-      .then(([config, currentUser]) => {
-        setAuthConfig(config);
-        setUser(currentUser);
-      })
-      .finally(() => setAuthReady(true));
-  }, []);
-
-  useEffect(() => {
-    if (!authReady) {
-      return;
-    }
-    if (authConfig?.enabled && !user) {
-      setSessionId(null);
-      return;
-    }
-    void createSession().then(setSessionId);
-  }, [authReady, authConfig?.enabled, user]);
 
   useEffect(() => {
     if (!fileId) {
@@ -172,51 +145,27 @@ export default function App() {
 
   async function handleLogout() {
     await logout();
-    setUser(null);
     setFiles([]);
-    setSessionId(null);
     navigate("/");
-    setStatus("Signed out.");
   }
-
-  const authRequired = authConfig?.enabled === true;
-  const canUseApp = !authRequired || user !== null;
 
   return (
     <div className="app">
-      <header className="header">
-        <div className="header-row">
-          <div>
-            <h1>Content Metadata Changer</h1>
-            <p>Inspect, transfer, convert, and update metadata for video and image files.</p>
-          </div>
-          {authReady && authRequired && (
-            <div className="auth-bar">
-              {user ? (
-                <>
-                  {user.picture_url ? (
-                    <img className="auth-avatar" src={user.picture_url} alt="" />
-                  ) : null}
-                  <span className="auth-name">{user.name}</span>
-                  <button type="button" onClick={() => void handleLogout()}>
-                    Sign out
-                  </button>
-                </>
-              ) : (
-                <a className="auth-login-button" href={loginUrl(window.location.pathname)}>
-                  Sign in with Google
-                </a>
-              )}
-            </div>
-          )}
-        </div>
-      </header>
+      <AppHeader
+        title="Edit content"
+        subtitle="Inspect, transfer, convert, and update metadata for video and image files."
+        authReady={authReady}
+        authRequired={authRequired}
+        user={user}
+        onLogout={() => void handleLogout()}
+        showBackLink
+      />
 
       {authReady && !canUseApp ? (
         <section className="panel auth-panel">
           <h2>Sign in required</h2>
           <p>Sign in with your Google account to upload files and run metadata jobs.</p>
-          <a className="auth-login-button" href={loginUrl("/")}>
+          <a className="auth-login-button" href={loginUrl("/editor")}>
             Sign in with Google
           </a>
         </section>
