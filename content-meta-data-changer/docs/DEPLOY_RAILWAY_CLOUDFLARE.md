@@ -29,6 +29,49 @@ Uploaded files are removed after `SESSION_TTL_HOURS`. Cleanup runs at startup an
 
 ---
 
+## Mobile sign-in: keep the frontend and API on one site
+
+Mobile Safari — and Chrome on iOS, which uses WebKit — block third-party
+cookies outright. With the frontend on `*.pages.dev` and the API on
+`*.up.railway.app` those are two unrelated sites (both are on the Public Suffix
+List), so the session cookie is third-party. Sign-in appears to succeed and then
+every request returns 401:
+
+```
+GET /api/v1/auth/google/callback … → 307   cookie set
+GET /api/v1/auth/me                → 401   cookie not sent back
+```
+
+`SameSite=None; Secure` does not help — the browser is refusing, not the server.
+Pick one of these:
+
+### Option A — custom domain (recommended)
+
+Put both services under one registrable domain, e.g. `app.example.com` for
+Pages and `api.example.com` for Railway. The cookie is then first-party. No
+upload size ceiling. See Part 4.
+
+### Option B — proxy /api through Pages
+
+`web/functions/api/[[path]].js` forwards `/api/*` from the Pages origin to
+Railway, so the browser only ever talks to one host. Requires no domain.
+
+1. Cloudflare Pages → Settings → Environment variables, add:
+   `API_ORIGIN = https://YOUR-RAILWAY-URL.up.railway.app`
+2. **Clear** `VITE_API_BASE` (leave it empty) so the app calls its own origin.
+3. Redeploy Pages (Vite bakes `VITE_API_BASE` in at build time).
+4. Railway: set `GOOGLE_REDIRECT_URI` to
+   `https://YOUR-PAGES-URL.pages.dev/api/v1/auth/google/callback`,
+   and register that same URL in Google Console.
+5. Railway: `AUTH_COOKIE_SAMESITE` may go back to `lax`; `CORS_ORIGINS` becomes
+   irrelevant but is harmless to leave.
+
+**Limit:** Cloudflare caps a Worker request body at 100 MB on Free and Pro
+plans. Uploads above that will fail through the proxy even though
+`MAX_UPLOAD_BYTES` allows 500 MB. If you need large video uploads, use Option A.
+
+---
+
 ## Before you start
 
 You need:
@@ -276,7 +319,7 @@ If sign-in fails:
 
 
 
-## Part 4 — Custom domains (optional)
+## Part 4 — Custom domains (recommended — fixes mobile sign-in)
 
 
 
@@ -296,6 +339,12 @@ If sign-in fails:
   - Type: **CNAME**
   - Name: `api`
   - Target: *(Railway-provided value)*
+  - Proxy status: **DNS only** (grey cloud), so Railway can issue its own
+    TLS certificate. Turning the orange cloud on before the certificate is
+    active causes a redirect loop.
+
+You do not buy subdomains. Owning the registrable domain is enough; `app.` and
+`api.` are just DNS records you create.
 
 
 
@@ -316,6 +365,22 @@ GOOGLE_REDIRECT_URI=https://api.yourdomain.com/api/v1/auth/google/callback
 ```
 VITE_API_BASE=https://api.yourdomain.com
 ```
+
+Remove `API_ORIGIN` if it was set for the Pages proxy — with a custom domain the
+proxy is unnecessary, and with it the 100 MB upload ceiling disappears.
+
+**Relax the cookie back to Lax.** `app.example.com` and `api.example.com` are
+different origins but the *same site*, so the session cookie is first-party.
+That is what makes mobile Safari work, and it means `SameSite=None` is no
+longer required:
+
+```
+AUTH_COOKIE_SAMESITE=lax
+AUTH_COOKIE_SECURE=1
+```
+
+CORS is still needed — same site, but different origin — so keep
+`CORS_ORIGINS` pointing at the app subdomain.
 
 **Google Console:**
 
