@@ -160,3 +160,139 @@ def test_video_result_carries_donor_metadata(tmp_path, video6_target, video6_sou
     donor_bytes = metadata_bytes(video6_source)
     assert donor_bytes > 0
     assert metadata_bytes(result) == donor_bytes
+
+
+# --- container changes must not re-encode ----------------------------------
+
+
+def _video_stream_md5(path: Path) -> str:
+    """Fingerprint of the encoded video stream, ignoring the container."""
+    import subprocess
+
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:v", "-c", "copy", "-f", "md5", "-"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+@pytest.fixture
+def small_mp4(tmp_path):
+    import shutil
+    import subprocess
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    path = tmp_path / "clip.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return path
+
+
+def _decodes_cleanly(path: Path) -> bool:
+    import subprocess
+
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and not result.stderr.strip()
+
+
+def test_changing_container_does_not_re_encode(small_mp4, tmp_path):
+    """MP4 and MOV share a container family, so the stream is copied, not redone.
+
+    Re-encoding silently destroyed quality — a 65 MB clip came back as 2.5 MB —
+    which defeats the point of only swapping container and metadata.
+    """
+    from core.convert import rewrap_or_convert_video
+
+    result = tmp_path / "rewrapped.mov"
+    rewrap_or_convert_video(small_mp4, result, "mov")
+
+    assert _video_stream_md5(result) == _video_stream_md5(small_mp4)
+
+
+def test_factory_output_decodes_for_every_video_input(small_mp4, video6_source, tmp_path):
+    """Covers the layout trap: a faststart source used to produce broken video.
+
+    The atom graft expects `moov` after `mdat`. Phone and web exports usually
+    put it first, and grafting onto that emitted invalid NAL sizes with no error
+    at all — the file simply would not play.
+    """
+    import subprocess
+
+    faststart = tmp_path / "faststart.mov"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(small_mp4), "-c", "copy",
+         "-movflags", "+faststart", str(faststart)],
+        check=True,
+        capture_output=True,
+    )
+
+    for label, source in (("mp4", small_mp4), ("faststart mov", faststart)):
+        result = tmp_path / f"out_{label.replace(' ', '_')}.mov"
+        build_factory_result(source, video6_source, result)
+        assert _decodes_cleanly(result), f"{label} source produced unplayable video"
+
+
+def test_factory_leaves_no_temporary_files_for_video(small_mp4, video6_source, tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    build_factory_result(small_mp4, video6_source, work / "out.mov", work_dir=work)
+    assert {p.name for p in work.iterdir()} == {"out.mov"}
+
+
+def test_describe_ffmpeg_failure_explains_a_kill(tmp_path):
+    from conversion import describe_ffmpeg_failure
+
+    source = tmp_path / "big.mp4"
+    source.write_bytes(b"\x00" * 2048)
+
+    message = describe_ffmpeg_failure(
+        returncode=-9, stderr="", stdout="", source=source, target_label="mov"
+    )
+    assert "SIGKILL" in message
+    assert "out of memory" in message
+    assert "big.mp4" in message
+    assert "Unknown" not in message
+
+
+def test_describe_ffmpeg_failure_reports_exit_code_and_output(tmp_path):
+    from conversion import describe_ffmpeg_failure
+
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"\x00" * 1024)
+
+    message = describe_ffmpeg_failure(
+        returncode=1,
+        stderr="Invalid data found when processing input",
+        stdout="",
+        source=source,
+        target_label="mov",
+    )
+    assert "code 1" in message
+    assert "Invalid data found" in message
+
+
+def test_describe_ffmpeg_failure_is_useful_even_with_no_output(tmp_path):
+    from conversion import describe_ffmpeg_failure
+
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"\x00" * 1024)
+
+    message = describe_ffmpeg_failure(
+        returncode=1, stderr=None, stdout=None, source=source, target_label="mov"
+    )
+    assert "code 1" in message
+    assert "no error output" in message

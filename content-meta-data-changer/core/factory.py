@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.convert import convert_image_file, convert_video_file
+from conversion import remux_video
+from core.convert import convert_image_file, rewrap_or_convert_video
 from core.errors import ConversionError, TransferError
 from core.transfer import transfer_metadata_files
 from media_types import is_image_path, is_video_path
@@ -94,17 +95,43 @@ def build_factory_result(
         converted = work_dir / f"{destination.stem}__converted{target_suffix}"
         target_key = target_suffix.lstrip(".")
         if source_kind == "video":
-            convert_video_file(source, converted, target_key)
+            rewrap_or_convert_video(source, converted, target_key)
         else:
             convert_image_file(source, converted, target_key)
         payload = converted
     else:
         payload = source
 
+    normalized: Path | None = None
+    if source_kind == "video" and _moov_precedes_mdat(payload):
+        # The atom graft assumes the sample tables sit after the payload. A
+        # faststart file (moov first) is grafted into something that decodes to
+        # invalid NAL sizes, silently — most phone and web exports are
+        # faststart, so this is reachable with no conversion at all.
+        normalized = work_dir / f"{destination.stem}__normalized{target_suffix}"
+        remux_video(payload, normalized)
+        payload = normalized
+
     try:
         transfer_metadata_files(payload, metadata, destination)
     finally:
-        if converted is not None:
-            converted.unlink(missing_ok=True)
+        for temporary in (converted, normalized):
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     return destination
+
+
+def _moov_precedes_mdat(path: Path) -> bool:
+    """True for a faststart-style file, where the index comes before the media."""
+    try:
+        from layout import parse_file_layout
+
+        order = [
+            segment.path[0]
+            for segment in parse_file_layout(path).segments
+            if segment.path and segment.path[0] in {"moov", "mdat"}
+        ]
+    except Exception:
+        return False  # unreadable layout: let the graft try and report for itself
+    return "moov" in order and "mdat" in order and order.index("moov") < order.index("mdat")
