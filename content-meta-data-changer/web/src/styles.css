@@ -1203,3 +1203,231 @@ button {
     width: 100%;
   }
 }
+
+.piece-empty {
+  text-align: center;
+  padding: 40px 24px;
+}
+
+.piece-empty h2 {
+  margin-top: 0;
+}
+
+.piece-empty p {
+  color: #9d9d9d;
+  max-width: 480px;
+  margin: 0 auto 20px;
+  line-height: 1.6;
+}
+
+.add-piece-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------------------------------------------------------------- *
+ * OFM list and membership
+ * ---------------------------------------------------------------- */
+
+.ofm-create-hint {
+  color: #9d9d9d;
+  line-height: 1.6;
+  margin-top: 0;
+}
+
+.ofm-create-form {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.ofm-create-input {
+  flex: 1;
+  min-width: 0;
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: #d4d4d4;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.ofm-create-input:focus {
+  outline: none;
+  border-color: #4a90d9;
+}
+
+.ofm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.ofm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 0;
+}
+
+.ofm-card-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ofm-card-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.ofm-card-open:hover .ofm-card-name {
+  color: #9cdcfe;
+}
+
+.ofm-card-meta {
+  font-size: 13px;
+  color: #858585;
+}
+
+.ofm-role {
+  display: inline-block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: 4px;
+  padding: 2px 8px;
+  border: 1px solid #3c3c3c;
+  color: #9d9d9d;
+}
+
+.ofm-role-owner {
+  border-color: #4a90d9;
+  color: #9cdcfe;
+}
+
+.ofm-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #ffcc80;
+}
+
+.ofm-confirm button {
+  background: transparent;
+  border: 1px solid #3c3c3c;
+  color: #9d9d9d;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.ofm-confirm-yes {
+  border-color: #e53935 !important;
+  color: #ef9a9a !important;
+}
+
+.members-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.members-toggle {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: transparent;
+  border: none;
+  padding: 14px 16px;
+  color: #d4d4d4;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.members-toggle:hover {
+  background: #2d2d2e;
+}
+
+.members-chevron {
+  color: #858585;
+}
+
+.members-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 16px;
+}
+
+.members-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid #3c3c3c;
+}
+
+.members-email {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+
+.members-pending {
+  font-size: 11px;
+  color: #ffcc80;
+  border: 1px solid #6d4c1f;
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+
+.members-remove {
+  background: transparent;
+  border: 1px solid #3c3c3c;
+  color: #9d9d9d;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.members-remove:hover {
+  border-color: #e53935;
+  color: #e53935;
+}
+
+.members-invite {
+  display: flex;
+  gap: 10px;
+  padding: 14px 16px 4px;
+}
+
+.members-invite-input {
+  flex: 1;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  background: #1e1e1e;
+}
+
+.members-hint {
+  margin: 0;
+  padding: 0 16px 16px;
+  font-size: 12px;
+  color: #6e6e6e;
+  line-height: 1.5;
+}

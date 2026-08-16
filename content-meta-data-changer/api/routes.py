@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 from api.auth import (
     Owner,
     assert_file_access,
-    assert_owns_piece,
     assert_session_access,
     auth_config,
     build_google_login_url,
@@ -31,13 +30,28 @@ from api.auth import (
 from api.database import (
     UPDATABLE_PIECE_FIELDS,
     ContentPieceRecord,
+    OfmMemberRecord,
+    OfmRecord,
     UserRecord,
+    add_member,
+    bind_member_user,
     create_content_piece,
+    create_ofm,
     delete_auth_session,
     delete_content_piece,
+    delete_ofm,
     get_content_piece,
+    get_member,
+    get_ofm,
     list_content_pieces,
+    list_members,
+    list_ofms_for,
+    member_role,
+    ofm_file_ids,
+    ofm_ids_referencing_file,
     referenced_file_ids,
+    remove_member,
+    rename_ofm,
     sessions_for_owner,
     update_content_piece,
 )
@@ -48,6 +62,13 @@ from api.jobs import (
     create_update_preview_job,
     get_job,
     job_to_result,
+)
+from api.permissions import (
+    ROLE_EDITOR,
+    ROLE_OWNER,
+    Action,
+    can,
+    describe_denial,
 )
 from api.storage import (
     StorageError,
@@ -75,6 +96,8 @@ from core.models import (
     JobResult,
     LayoutResult,
     MetadataResult,
+    OfmDTO,
+    OfmMemberDTO,
     SegmentBytesResult,
     SessionDTO,
     StorageUsageDTO,
@@ -107,6 +130,9 @@ class FactoryJobRequest(BaseModel):
     source_file_id: str
     metadata_file_id: str
     output_filename: str | None = Field(default=None, min_length=1)
+    #: Where the result should be stored. Defaults to the source file's session,
+    #: which is wrong when a teammate runs the job on someone else's upload.
+    output_session_id: str | None = None
 
 
 def _max_upload_bytes() -> int:
@@ -117,25 +143,42 @@ def _storage_http_error(exc: StorageError) -> HTTPException:
     return HTTPException(status_code=404, detail={"error": str(exc), "code": "not_found"})
 
 
+def _shared_via_ofm(file_id: str, user: UserRecord | None, client_id: str | None) -> bool:
+    """True when the file belongs to a piece in an OFM the caller is a member of.
+
+    Uploads live in the uploader's own session, so without this a teammate's
+    files would be invisible to everyone else in a shared OFM.
+    """
+    email = user.email if user is not None else None
+    return any(
+        member_role(ofm_id, email=email, client_id=client_id) is not None
+        for ofm_id in ofm_ids_referencing_file(file_id)
+    )
+
+
+def authorize_file(file_id: str, user: UserRecord | None, client_id: str | None):
+    try:
+        stored = get_file(file_id)
+    except StorageError as exc:
+        raise _storage_http_error(exc) from exc
+    try:
+        assert_file_access(stored.session_id, user, client_id)
+    except HTTPException:
+        if not _shared_via_ofm(file_id, user, client_id):
+            raise
+    return stored
+
+
 def get_stored_file(
     file_id: str,
     user: UserRecord | None = Depends(get_current_user_optional),
     client_id: str | None = Depends(get_client_id_optional),
 ):
-    try:
-        stored = get_file(file_id)
-    except StorageError as exc:
-        raise _storage_http_error(exc) from exc
-    assert_file_access(stored.session_id, user, client_id)
-    return stored
+    return authorize_file(file_id, user, client_id)
 
 
 def ensure_file_access(file_id: str, user: UserRecord | None, client_id: str | None) -> None:
-    try:
-        stored = get_file(file_id)
-    except StorageError as exc:
-        raise _storage_http_error(exc) from exc
-    assert_file_access(stored.session_id, user, client_id)
+    authorize_file(file_id, user, client_id)
 
 
 @router.get("/auth/config", response_model=AuthConfigDTO)
@@ -392,11 +435,15 @@ def start_factory_job(
 ) -> JobResult:
     ensure_file_access(body.source_file_id, user, client_id)
     ensure_file_access(body.metadata_file_id, user, client_id)
+    if body.output_session_id:
+        # Only into a session the caller actually owns.
+        assert_session_access(body.output_session_id, user, client_id)
     try:
         record = create_factory_job(
             body.source_file_id,
             body.metadata_file_id,
             body.output_filename,
+            body.output_session_id,
         )
     except StorageError as exc:
         raise _storage_http_error(exc) from exc
@@ -418,7 +465,19 @@ def job_status(
     return job_to_result(record)
 
 
-# --- Saved content pieces ---------------------------------------------------
+# --- OFMs, membership, and their content pieces -----------------------------
+
+
+class CreateOfmRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class RenameOfmRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class InviteMemberRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
 
 
 class CreatePieceRequest(BaseModel):
@@ -438,6 +497,195 @@ class UpdatePieceRequest(BaseModel):
     clear: list[str] = Field(default_factory=list)
 
 
+def _not_found(what: str = "OFM") -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail={"error": f"{what} not found.", "code": "not_found"},
+    )
+
+
+def caller_email(user: UserRecord | None) -> str | None:
+    return user.email if user is not None else None
+
+
+def require_role(ofm_id: str, owner: Owner, user: UserRecord | None) -> str:
+    """The caller's role, 404ing when they are not a member.
+
+    404 rather than 403 so a non-member cannot probe which OFM ids exist.
+    """
+    email = caller_email(user)
+    role = member_role(ofm_id, email=email, client_id=owner.client_id)
+    if role is None:
+        raise _not_found()
+    if user is not None and email:
+        # First access by an invitee: attach their account to the invitation.
+        bind_member_user(ofm_id, email, user.id)
+    return role
+
+
+def require_can(ofm_id: str, owner: Owner, user: UserRecord | None, action: Action) -> str:
+    role = require_role(ofm_id, owner, user)
+    if not can(role, action):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": describe_denial(action), "code": "forbidden"},
+        )
+    return role
+
+
+def _ofm_to_dto(record: OfmRecord, role: str) -> OfmDTO:
+    pieces = list_content_pieces(record.id)
+    return OfmDTO(
+        id=record.id,
+        name=record.name,
+        role=role,
+        is_owner=role == ROLE_OWNER,
+        piece_count=len(pieces),
+        member_count=len(list_members(record.id)),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        can_delete=can(role, Action.DELETE_OFM),
+    )
+
+
+def _member_to_dto(record: OfmMemberRecord) -> OfmMemberDTO:
+    return OfmMemberDTO(
+        id=record.id,
+        email=record.email,
+        role=record.role,
+        accepted=record.user_id is not None,
+        created_at=record.created_at,
+    )
+
+
+@router.get("/ofms", response_model=list[OfmDTO])
+def list_ofms(
+    owner: Owner = Depends(require_owner),
+    user: UserRecord | None = Depends(get_current_user_optional),
+) -> list[OfmDTO]:
+    email = caller_email(user)
+    records = list_ofms_for(email=email, client_id=owner.client_id)
+    result: list[OfmDTO] = []
+    for record in records:
+        role = member_role(record.id, email=email, client_id=owner.client_id)
+        if role:
+            if user is not None and email:
+                # Seeing an OFM is enough to bind the invitation to the account,
+                # so it stops showing as a pending invite to the rest of the team.
+                bind_member_user(record.id, email, user.id)
+            result.append(_ofm_to_dto(record, role))
+    return result
+
+
+@router.post("/ofms", response_model=OfmDTO, status_code=201)
+def create_ofm_route(
+    body: CreateOfmRequest,
+    owner: Owner = Depends(require_owner),
+    user: UserRecord | None = Depends(get_current_user_optional),
+) -> OfmDTO:
+    record = create_ofm(
+        name=body.name,
+        owner_user_id=owner.user_id,
+        owner_client_id=owner.client_id,
+        owner_email=caller_email(user),
+    )
+    return _ofm_to_dto(record, ROLE_OWNER)
+
+
+@router.get("/ofms/{ofm_id}", response_model=OfmDTO)
+def get_ofm_route(
+    ofm_id: str,
+    owner: Owner = Depends(require_owner),
+    user: UserRecord | None = Depends(get_current_user_optional),
+) -> OfmDTO:
+    role = require_role(ofm_id, owner, user)
+    record = get_ofm(ofm_id)
+    if record is None:
+        raise _not_found()
+    return _ofm_to_dto(record, role)
+
+
+@router.patch("/ofms/{ofm_id}", response_model=OfmDTO)
+def rename_ofm_route(
+    ofm_id: str,
+    body: RenameOfmRequest,
+    owner: Owner = Depends(require_owner),
+    user: UserRecord | None = Depends(get_current_user_optional),
+) -> OfmDTO:
+    role = require_can(ofm_id, owner, user, Action.RENAME_OFM)
+    record = rename_ofm(ofm_id, body.name)
+    if record is None:
+        raise _not_found()
+    return _ofm_to_dto(record, role)
+
+
+@router.delete("/ofms/{ofm_id}", status_code=204)
+def delete_ofm_route(
+    ofm_id: str,
+    owner: Owner = Depends(require_owner),
+    user: UserRecord | None = Depends(get_current_user_optional),
+) -> Response:
+    require_can(ofm_id, owner, user, Action.DELETE_OFM)
+    # Free every file this OFM alone was keeping alive.
+    own_files = ofm_file_ids(ofm_id)
+    delete_ofm(ofm_id)
+    still_used = referenced_file_ids()
+    for file_id in own_files - still_used:
+        delete_file_by_id(file_id)
+    return Response(status_code=204)
+
+
+@router.get("/ofms/{ofm_id}/members", response_model=list[OfmMemberDTO])
+def list_members_route(
+    ofm_id: str,
+    owner: Owner = Depends(require_owner),
+    user: UserRecord | None = Depends(get_current_user_optional),
+) -> list[OfmMemberDTO]:
+    require_role(ofm_id, owner, user)
+    return [_member_to_dto(record) for record in list_members(ofm_id)]
+
+
+@router.post("/ofms/{ofm_id}/members", response_model=OfmMemberDTO, status_code=201)
+def invite_member_route(
+    ofm_id: str,
+    body: InviteMemberRequest,
+    owner: Owner = Depends(require_owner),
+    user: UserRecord | None = Depends(get_current_user_optional),
+) -> OfmMemberDTO:
+    require_can(ofm_id, owner, user, Action.INVITE_MEMBERS)
+    email = body.email.strip().lower()
+    if "@" not in email:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "Enter a valid email address.", "code": "invalid_email"},
+        )
+    record = add_member(ofm_id, email, ROLE_EDITOR, invited_by=owner.user_id)
+    return _member_to_dto(record)
+
+
+@router.delete("/ofms/{ofm_id}/members/{member_id}", status_code=204)
+def remove_member_route(
+    ofm_id: str,
+    member_id: str,
+    owner: Owner = Depends(require_owner),
+    user: UserRecord | None = Depends(get_current_user_optional),
+) -> Response:
+    require_can(ofm_id, owner, user, Action.REMOVE_MEMBERS)
+    record = get_member(member_id)
+    if record is None or record.ofm_id != ofm_id:
+        raise _not_found("Member")
+    if record.role == ROLE_OWNER:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "The owner cannot be removed from their own OFM.",
+                "code": "cannot_remove_owner",
+            },
+        )
+    remove_member(member_id)
+    return Response(status_code=204)
+
+
 def _resolve_stored(file_id: str | None) -> StoredFileDTO | None:
     if not file_id:
         return None
@@ -450,6 +698,7 @@ def _resolve_stored(file_id: str | None) -> StoredFileDTO | None:
 def _piece_to_dto(record: ContentPieceRecord) -> ContentPieceDTO:
     return ContentPieceDTO(
         id=record.id,
+        ofm_id=record.ofm_id,
         name=record.name,
         output_stem=record.output_stem,
         source_file_id=record.source_file_id,
@@ -465,35 +714,26 @@ def _piece_to_dto(record: ContentPieceRecord) -> ContentPieceDTO:
     )
 
 
-def _load_owned_piece(piece_id: str, owner: Owner) -> ContentPieceRecord:
-    record = get_content_piece(piece_id)
-    if record is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "Content piece not found.", "code": "not_found"},
-        )
-    assert_owns_piece(owner, record.user_id, record.client_id)
-    return record
+@router.get("/ofms/{ofm_id}/pieces", response_model=list[ContentPieceDTO])
+def list_pieces_route(
+    ofm_id: str,
+    owner: Owner = Depends(require_owner),
+    user: UserRecord | None = Depends(get_current_user_optional),
+) -> list[ContentPieceDTO]:
+    require_role(ofm_id, owner, user)
+    return [_piece_to_dto(record) for record in list_content_pieces(ofm_id)]
 
 
-@router.get("/pieces", response_model=list[ContentPieceDTO])
-def list_pieces(owner: Owner = Depends(require_owner)) -> list[ContentPieceDTO]:
-    records = list_content_pieces(user_id=owner.user_id, client_id=owner.client_id)
-    return [_piece_to_dto(record) for record in records]
-
-
-@router.post("/pieces", response_model=ContentPieceDTO, status_code=201)
-def create_piece(
+@router.post("/ofms/{ofm_id}/pieces", response_model=ContentPieceDTO, status_code=201)
+def create_piece_route(
+    ofm_id: str,
     body: CreatePieceRequest,
     owner: Owner = Depends(require_owner),
+    user: UserRecord | None = Depends(get_current_user_optional),
 ) -> ContentPieceDTO:
-    existing = list_content_pieces(user_id=owner.user_id, client_id=owner.client_id)
-    record = create_content_piece(
-        user_id=owner.user_id,
-        client_id=owner.client_id,
-        name=body.name,
-        position=len(existing),
-    )
+    require_can(ofm_id, owner, user, Action.EDIT_PIECES)
+    existing = list_content_pieces(ofm_id)
+    record = create_content_piece(ofm_id=ofm_id, name=body.name, position=len(existing))
     return _piece_to_dto(record)
 
 
@@ -505,7 +745,10 @@ def patch_piece(
     user: UserRecord | None = Depends(get_current_user_optional),
     client_id: str | None = Depends(get_client_id_optional),
 ) -> ContentPieceDTO:
-    _load_owned_piece(piece_id, owner)
+    existing = get_content_piece(piece_id)
+    if existing is None:
+        raise _not_found("Content piece")
+    require_can(existing.ofm_id, owner, user, Action.EDIT_PIECES)
 
     changes = body.model_dump(exclude_none=True, exclude={"clear"})
     for field in body.clear:
@@ -520,16 +763,20 @@ def patch_piece(
 
     record = update_content_piece(piece_id, changes)
     if record is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "Content piece not found.", "code": "not_found"},
-        )
+        raise _not_found("Content piece")
     return _piece_to_dto(record)
 
 
 @router.delete("/pieces/{piece_id}", status_code=204)
-def remove_piece(piece_id: str, owner: Owner = Depends(require_owner)) -> Response:
-    record = _load_owned_piece(piece_id, owner)
+def remove_piece(
+    piece_id: str,
+    owner: Owner = Depends(require_owner),
+    user: UserRecord | None = Depends(get_current_user_optional),
+) -> Response:
+    record = get_content_piece(piece_id)
+    if record is None:
+        raise _not_found("Content piece")
+    require_can(record.ofm_id, owner, user, Action.EDIT_PIECES)
     # Free the storage immediately, but keep files another piece still uses.
     still_used = referenced_file_ids(excluding_piece=piece_id)
     for file_id in record.file_ids():

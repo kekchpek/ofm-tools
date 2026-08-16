@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   createPiece,
   deletePiece,
   downloadUrl,
+  getOfm,
   getStorageUsage,
   listPieces,
   loginUrl,
@@ -12,6 +13,7 @@ import {
   updatePiece,
   uploadFile,
   type ContentPiece,
+  type Ofm,
   type PiecePatch,
   type StorageUsage,
   type StoredFile,
@@ -19,6 +21,7 @@ import {
 import AppHeader from "./AppHeader";
 import ConnectionError from "./ConnectionError";
 import DropSlot from "./DropSlot";
+import MembersPanel from "./MembersPanel";
 import FilePreview from "./FilePreview";
 import { useSession } from "./useSession";
 
@@ -95,14 +98,17 @@ function formatBytes(size: number): string {
 
 export default function FactoryPage() {
   const navigate = useNavigate();
+  const { ofmId } = useParams();
   const { authReady, authRequired, canUseApp, user, sessionId, error: sessionError, logout } =
     useSession();
 
+  const [ofm, setOfm] = useState<Ofm | null>(null);
   const [pieces, setPieces] = useState<Piece[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [storage, setStorage] = useState<StorageUsage | null>(null);
   const [saving, setSaving] = useState(0);
+  const [adding, setAdding] = useState(false);
 
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
@@ -145,21 +151,19 @@ export default function FactoryPage() {
   }, []);
 
   useEffect(() => {
-    if (!sessionId || loaded) {
+    if (!sessionId || loaded || !ofmId) {
       return;
     }
     let cancelled = false;
     void (async () => {
       try {
-        const existing = await listPieces();
+        // Read-only on purpose. Creating a starter piece here would run twice
+        // under StrictMode's double mount — both passes see an empty list
+        // before either write lands, and two pieces appear.
+        const [details, existing] = await Promise.all([getOfm(ofmId), listPieces(ofmId)]);
         if (cancelled) return;
-        if (existing.length === 0) {
-          const first = await createPiece("Content piece 1");
-          if (cancelled) return;
-          setPieces([fromDTO(first)]);
-        } else {
-          setPieces(existing.map(fromDTO));
-        }
+        setOfm(details);
+        setPieces(existing.map(fromDTO));
         setLoadError(null);
       } catch (cause) {
         if (!cancelled) setLoadError(String(cause));
@@ -173,7 +177,7 @@ export default function FactoryPage() {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, loaded, refreshStorage]);
+  }, [sessionId, loaded, ofmId, refreshStorage]);
 
   async function handleLogout() {
     await logout();
@@ -240,7 +244,7 @@ export default function FactoryPage() {
     const filename = withExtension(stem, extensionOf(metadata));
 
     try {
-      const job = await startFactoryJob(source.file_id, metadata.file_id, filename);
+      const job = await startFactoryJob(source.file_id, metadata.file_id, filename, sessionId ?? undefined);
       const finished = await pollJob(job.id);
       if (finished.status !== "succeeded" || !finished.output_file_id) {
         throw new Error(finished.error ?? "Generation failed");
@@ -251,7 +255,7 @@ export default function FactoryPage() {
         status: "idle",
         result: {
           file_id: resultId,
-          session_id: source.session_id,
+          session_id: sessionId ?? source.session_id,
           filename,
           size: 0,
           media_kind: source.media_kind,
@@ -271,11 +275,18 @@ export default function FactoryPage() {
   }
 
   async function addPiece() {
+    if (adding) {
+      return; // an impatient double-click must not create two
+    }
+    setAdding(true);
     try {
-      const created = await createPiece(`Content piece ${pieces.length + 1}`);
+      const created = await createPiece(ofmId!, `Content piece ${pieces.length + 1}`);
       setPieces((current) => [...current, fromDTO(created)]);
+      setLoadError(null);
     } catch (cause) {
       setLoadError(String(cause));
+    } finally {
+      setAdding(false);
     }
   }
 
@@ -288,10 +299,6 @@ export default function FactoryPage() {
       setLoadError(String(cause));
     }
     refreshStorage();
-    if (pieces.length <= 1) {
-      const created = await createPiece("Content piece 1");
-      setPieces([fromDTO(created)]);
-    }
   }
 
   const quotaPercent = storage
@@ -301,13 +308,15 @@ export default function FactoryPage() {
   return (
     <div className="app">
       <AppHeader
-        title="OFM Factory"
+        title={ofm?.name ?? "OFM Factory"}
         subtitle="Rebuild your content in a donor file's format, wearing its metadata."
         authReady={authReady}
         authRequired={authRequired}
         user={user}
         onLogout={() => void handleLogout()}
         showBackLink
+        backTo="/factory"
+        backLabel="All OFMs"
       />
 
       {!authReady ? (
@@ -356,6 +365,26 @@ export default function FactoryPage() {
           {loadError && (
             <section className="panel">
               <p className="piece-error">{loadError}</p>
+            </section>
+          )}
+
+          {ofmId && <MembersPanel ofmId={ofmId} />}
+
+          {loaded && pieces.length === 0 && (
+            <section className="panel piece-empty">
+              <h2>No content pieces yet</h2>
+              <p>
+                A content piece pairs a source file with a metadata donor and produces one result.
+                Add as many as you need — they are saved to your account.
+              </p>
+              <button
+                type="button"
+                className="generate-button"
+                onClick={() => void addPiece()}
+                disabled={adding}
+              >
+                {adding ? "Adding…" : "Add your first content piece"}
+              </button>
             </section>
           )}
 
@@ -489,11 +518,18 @@ export default function FactoryPage() {
             })}
           </div>
 
-          <div className="piece-list-actions">
-            <button type="button" className="add-piece-button" onClick={() => void addPiece()}>
-              + Add content piece
-            </button>
-          </div>
+          {pieces.length > 0 && (
+            <div className="piece-list-actions">
+              <button
+                type="button"
+                className="add-piece-button"
+                onClick={() => void addPiece()}
+                disabled={adding}
+              >
+                {adding ? "Adding…" : "+ Add content piece"}
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>

@@ -338,15 +338,3 @@ def require_owner(
         )
     return Owner(user_id=None, client_id=client_id)
 
-
-def assert_owns_piece(owner: Owner, piece_user_id: str | None, piece_client_id: str | None) -> None:
-    if owner.user_id is not None:
-        if piece_user_id == owner.user_id:
-            return
-    elif piece_client_id is not None and owner.client_id is not None:
-        if secrets.compare_digest(piece_client_id, owner.client_id):
-            return
-    raise HTTPException(
-        status_code=404,
-        detail={"error": "Content piece not found.", "code": "not_found"},
-    )

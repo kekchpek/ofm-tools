@@ -8,8 +8,11 @@ type AppHeaderProps = {
   authRequired: boolean;
   user: User | null;
   onLogout: () => void;
-  /** Shown on inner pages so users can get back to the mode picker. */
+  /** Shown on inner pages so users can get back up a level. */
   showBackLink?: boolean;
+  /** Where the back link goes, and what it is called. */
+  backTo?: string;
+  backLabel?: string;
 };
 
 export default function AppHeader({
@@ -20,14 +23,16 @@ export default function AppHeader({
   user,
   onLogout,
   showBackLink = false,
+  backTo = "/",
+  backLabel = "All tools",
 }: AppHeaderProps) {
   return (
     <header className="header">
       <div className="header-row">
         <div>
           {showBackLink && (
-            <Link className="back-link" to="/">
-              ← All tools
+            <Link className="back-link" to={backTo}>
+              ← {backLabel}
             </Link>
           )}
           <h1>{title}</h1>

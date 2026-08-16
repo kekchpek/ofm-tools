@@ -237,6 +237,7 @@ export async function startFactoryJob(
   sourceFileId: string,
   metadataFileId: string,
   outputFilename?: string,
+  outputSessionId?: string,
 ): Promise<JobResult> {
   return request("/api/v1/jobs/factory", {
     method: "POST",
@@ -245,6 +246,7 @@ export async function startFactoryJob(
       source_file_id: sourceFileId,
       metadata_file_id: metadataFileId,
       ...(outputFilename ? { output_filename: outputFilename } : {}),
+      ...(outputSessionId ? { output_session_id: outputSessionId } : {}),
     }),
   });
 }
@@ -266,6 +268,7 @@ export async function pollJob(jobId: string): Promise<JobResult> {
 
 export type ContentPiece = {
   id: string;
+  ofm_id: string;
   name: string;
   output_stem: string;
   source_file_id: string | null;
@@ -297,12 +300,12 @@ export type StorageUsage = {
   quota_bytes: number;
 };
 
-export function listPieces(): Promise<ContentPiece[]> {
-  return request<ContentPiece[]>("/api/v1/pieces");
+export function listPieces(ofmId: string): Promise<ContentPiece[]> {
+  return request<ContentPiece[]>(`/api/v1/ofms/${ofmId}/pieces`);
 }
 
-export function createPiece(name: string): Promise<ContentPiece> {
-  return request<ContentPiece>("/api/v1/pieces", {
+export function createPiece(ofmId: string, name: string): Promise<ContentPiece> {
+  return request<ContentPiece>(`/api/v1/ofms/${ofmId}/pieces`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
@@ -326,4 +329,78 @@ export async function deletePiece(pieceId: string): Promise<void> {
 
 export function getStorageUsage(): Promise<StorageUsage> {
   return request<StorageUsage>("/api/v1/storage");
+}
+
+export type Ofm = {
+  id: string;
+  name: string;
+  role: string;
+  is_owner: boolean;
+  piece_count: number;
+  member_count: number;
+  created_at: string;
+  updated_at: string;
+  /** Resolved server-side; the UI never reimplements permission rules. */
+  can_delete: boolean;
+};
+
+export type OfmMember = {
+  id: string;
+  email: string;
+  role: string;
+  /** False while the invitation is outstanding. */
+  accepted: boolean;
+  created_at: string;
+};
+
+export function listOfms(): Promise<Ofm[]> {
+  return request<Ofm[]>("/api/v1/ofms");
+}
+
+export function getOfm(ofmId: string): Promise<Ofm> {
+  return request<Ofm>(`/api/v1/ofms/${ofmId}`);
+}
+
+export function createOfm(name: string): Promise<Ofm> {
+  return request<Ofm>("/api/v1/ofms", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function renameOfm(ofmId: string, name: string): Promise<Ofm> {
+  return request<Ofm>(`/api/v1/ofms/${ofmId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function deleteOfm(ofmId: string): Promise<void> {
+  const response = await apiFetch(`/api/v1/ofms/${ofmId}`, { method: "DELETE" });
+  if (!response.ok && response.status !== 404) {
+    throw new Error(await response.text());
+  }
+}
+
+export function listMembers(ofmId: string): Promise<OfmMember[]> {
+  return request<OfmMember[]>(`/api/v1/ofms/${ofmId}/members`);
+}
+
+export function inviteMember(ofmId: string, email: string): Promise<OfmMember> {
+  return request<OfmMember>(`/api/v1/ofms/${ofmId}/members`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function removeMember(ofmId: string, memberId: string): Promise<void> {
+  const response = await apiFetch(`/api/v1/ofms/${ofmId}/members/${memberId}`, {
+    method: "DELETE",
+  });
+  if (!response.ok && response.status !== 404) {
+    throw new Error(await response.text());
+  }
 }

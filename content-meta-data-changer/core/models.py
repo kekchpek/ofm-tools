@@ -210,6 +210,7 @@ CATEGORY_LABELS_EXPORT = CATEGORY_LABELS
 
 class ContentPieceDTO(BaseModel):
     id: str
+    ofm_id: str
     name: str
     output_stem: str
     source_file_id: str | None = None
@@ -233,3 +234,25 @@ class StorageUsageDTO(BaseModel):
     @property
     def remaining_bytes(self) -> int:
         return max(0, self.quota_bytes - self.used_bytes)
+
+
+class OfmDTO(BaseModel):
+    id: str
+    name: str
+    role: str
+    is_owner: bool
+    piece_count: int
+    member_count: int
+    created_at: str
+    updated_at: str
+    #: Resolved server-side so the UI never has to reimplement permission rules.
+    can_delete: bool
+
+
+class OfmMemberDTO(BaseModel):
+    id: str
+    email: str
+    role: str
+    #: False while the invitation is outstanding (no account bound yet).
+    accepted: bool
+    created_at: str

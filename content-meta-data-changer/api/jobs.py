@@ -141,6 +141,7 @@ def create_factory_job(
     source_file_id: str,
     metadata_file_id: str,
     output_filename: str | None = None,
+    output_session_id: str | None = None,
 ) -> JobRecord:
     source = get_file(source_file_id)
     metadata = get_file(metadata_file_id)
@@ -156,17 +157,23 @@ def create_factory_job(
     else:
         resolved_name = factory_output_name(source_name, metadata_name)
 
+    # The result belongs to whoever ran the job, not to whoever uploaded the
+    # input. In a shared OFM those are different people, and writing into
+    # someone else's session would leave the caller unable to touch the output.
+    target_session = output_session_id or source.session_id
+
     job_id = str(uuid.uuid4())
     record = JobRecord(
         id=job_id,
         type=JobType.factory,
         status=JobStatus.queued,
         created_at=_now(),
-        session_id=source.session_id,
+        session_id=target_session,
         params={
             "source_file_id": source_file_id,
             "metadata_file_id": metadata_file_id,
             "output_filename": resolved_name,
+            "output_session_id": target_session,
         },
     )
     _jobs[job_id] = record
@@ -236,9 +243,10 @@ def _run_factory(record: JobRecord) -> None:
     try:
         source = get_file(record.params["source_file_id"])
         metadata = get_file(record.params["metadata_file_id"])
-        output_path = _job_output_path(source.session_id, record.id, record.params["output_filename"])
+        session_id = record.params.get("output_session_id") or source.session_id
+        output_path = _job_output_path(session_id, record.id, record.params["output_filename"])
         build_factory_result(source.path, metadata.path, output_path)
-        stored = register_existing_file(source.session_id, output_path, record.params["output_filename"])
+        stored = register_existing_file(session_id, output_path, record.params["output_filename"])
         record.output_file_id = stored.file_id
         record.status = JobStatus.succeeded
     except Exception as exc:
