@@ -1,11 +1,19 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  createPiece,
+  deletePiece,
   downloadUrl,
+  getStorageUsage,
+  listPieces,
   loginUrl,
   pollJob,
   startFactoryJob,
+  updatePiece,
   uploadFile,
+  type ContentPiece,
+  type PiecePatch,
+  type StorageUsage,
   type StoredFile,
 } from "./api/client";
 import AppHeader from "./AppHeader";
@@ -20,36 +28,37 @@ type Slot = {
   error: string | null;
 };
 
-type PieceStatus = "idle" | "generating" | "done" | "error";
+type PieceStatus = "idle" | "generating" | "error";
 
-type ContentPiece = {
+type Piece = {
   id: string;
   name: string;
-  /** Result file name without extension; empty means "use the suggested name". */
   outputStem: string;
   source: Slot;
   metadata: Slot;
-  status: PieceStatus;
-  resultFileId: string | null;
+  result: StoredFile | null;
   resultName: string | null;
+  status: PieceStatus;
   error: string | null;
 };
 
 const EMPTY_SLOT: Slot = { file: null, uploading: false, error: null };
+const SAVE_DEBOUNCE_MS = 700;
 
-let pieceCounter = 0;
+function slotFrom(file: StoredFile | null): Slot {
+  return { file, uploading: false, error: null };
+}
 
-function newPiece(position: number): ContentPiece {
-  pieceCounter += 1;
+function fromDTO(dto: ContentPiece): Piece {
   return {
-    id: `piece-${pieceCounter}-${Date.now()}`,
-    name: `Content piece ${position}`,
-    outputStem: "",
-    source: { ...EMPTY_SLOT },
-    metadata: { ...EMPTY_SLOT },
+    id: dto.id,
+    name: dto.name,
+    outputStem: dto.output_stem,
+    source: slotFrom(dto.source_file),
+    metadata: slotFrom(dto.metadata_file),
+    result: dto.result_file,
+    resultName: dto.result_filename,
     status: "idle",
-    resultFileId: null,
-    resultName: null,
     error: null,
   };
 }
@@ -58,24 +67,18 @@ function extensionOf(file: StoredFile | null): string {
   return file?.filename.match(/\.[^.]+$/)?.[0].toLowerCase() ?? "";
 }
 
-/** Name used when the user leaves the result field blank. */
 function suggestedStem(source: StoredFile | null): string {
   if (!source) return "";
   return `${source.filename.replace(/\.[^.]+$/, "")}_ofm`;
 }
 
-/** True when the typed name already carries the target extension. */
 function alreadyHasExtension(name: string, extension: string): boolean {
   return extension !== "" && name.toLowerCase().endsWith(extension);
 }
 
 /**
- * Give the name exactly one trailing extension — the donor's.
- *
- * Must match `normalize_output_name` on the server, which has the final say;
- * if they disagree the download arrives under a different name than shown.
- * Already correct: "IMG_0118.HEIC" + .heic -> "IMG_0118.HEIC".
- * Wrong extension:  "IMG_0118.jpg"  + .heic -> "IMG_0118.heic".
+ * Give the name exactly one trailing extension — the donor's. Must match
+ * `normalize_output_name` on the server, which has the final say.
  */
 function withExtension(name: string, extension: string): string {
   if (!extension || alreadyHasExtension(name, extension)) {
@@ -84,14 +87,93 @@ function withExtension(name: string, extension: string): string {
   return `${name.replace(/\.[^.]+$/, "")}${extension}`;
 }
 
+function formatBytes(size: number): string {
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`;
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(0)} MB`;
+  return `${(size / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 export default function FactoryPage() {
   const navigate = useNavigate();
-  const { authReady, authRequired, canUseApp, user, sessionId, error: sessionError, logout } = useSession();
-  const [pieces, setPieces] = useState<ContentPiece[]>([newPiece(1)]);
+  const { authReady, authRequired, canUseApp, user, sessionId, error: sessionError, logout } =
+    useSession();
 
-  const updatePiece = useCallback((id: string, patch: (piece: ContentPiece) => ContentPiece) => {
-    setPieces((current) => current.map((piece) => (piece.id === id ? patch(piece) : piece)));
+  const [pieces, setPieces] = useState<Piece[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [storage, setStorage] = useState<StorageUsage | null>(null);
+  const [saving, setSaving] = useState(0);
+
+  const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  const patch = useCallback((id: string, update: (piece: Piece) => Piece) => {
+    setPieces((current) => current.map((piece) => (piece.id === id ? update(piece) : piece)));
   }, []);
+
+  const refreshStorage = useCallback(() => {
+    void getStorageUsage().then(setStorage).catch(() => undefined);
+  }, []);
+
+  /** Persist immediately; used for structural changes like files and results. */
+  const save = useCallback(
+    async (id: string, body: PiecePatch) => {
+      setSaving((count) => count + 1);
+      try {
+        await updatePiece(id, body);
+      } catch (cause) {
+        patch(id, (piece) => ({ ...piece, error: String(cause) }));
+      } finally {
+        setSaving((count) => count - 1);
+      }
+    },
+    [patch],
+  );
+
+  /** Persist after typing settles, so every keystroke is not a request. */
+  const saveDebounced = useCallback(
+    (id: string, body: PiecePatch) => {
+      clearTimeout(saveTimers.current[id]);
+      saveTimers.current[id] = setTimeout(() => void save(id, body), SAVE_DEBOUNCE_MS);
+    },
+    [save],
+  );
+
+  // Flush pending edits if the component goes away mid-typing.
+  useEffect(() => {
+    const timers = saveTimers.current;
+    return () => Object.values(timers).forEach(clearTimeout);
+  }, []);
+
+  useEffect(() => {
+    if (!sessionId || loaded) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const existing = await listPieces();
+        if (cancelled) return;
+        if (existing.length === 0) {
+          const first = await createPiece("Content piece 1");
+          if (cancelled) return;
+          setPieces([fromDTO(first)]);
+        } else {
+          setPieces(existing.map(fromDTO));
+        }
+        setLoadError(null);
+      } catch (cause) {
+        if (!cancelled) setLoadError(String(cause));
+      } finally {
+        if (!cancelled) {
+          setLoaded(true);
+          refreshStorage();
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, loaded, refreshStorage]);
 
   async function handleLogout() {
     await logout();
@@ -99,55 +181,60 @@ export default function FactoryPage() {
   }
 
   async function handleFile(pieceId: string, which: "source" | "metadata", file: File) {
-    if (!sessionId) {
-      updatePiece(pieceId, (piece) => ({
-        ...piece,
-        [which]: { ...piece[which], error: "Session is not ready yet. Try again in a moment." },
-      }));
-      return;
-    }
+    if (!sessionId) return;
 
-    // A new input invalidates any result already generated from the old one.
-    updatePiece(pieceId, (piece) => ({
+    // A new input invalidates any result generated from the old one.
+    patch(pieceId, (piece) => ({
       ...piece,
       [which]: { file: null, uploading: true, error: null },
-      status: "idle",
-      resultFileId: null,
+      result: null,
       resultName: null,
+      status: "idle",
       error: null,
     }));
 
     try {
       const uploaded = await uploadFile(sessionId, file);
-      updatePiece(pieceId, (piece) => ({
+      patch(pieceId, (piece) => ({ ...piece, [which]: slotFrom(uploaded) }));
+      await save(pieceId, {
+        [which === "source" ? "source_file_id" : "metadata_file_id"]: uploaded.file_id,
+        clear: ["result_file_id", "result_filename"],
+      });
+      refreshStorage();
+    } catch (cause) {
+      const message = String(cause);
+      patch(pieceId, (piece) => ({
         ...piece,
-        [which]: { file: uploaded, uploading: false, error: null },
-      }));
-    } catch (error) {
-      updatePiece(pieceId, (piece) => ({
-        ...piece,
-        [which]: { file: null, uploading: false, error: String(error) },
+        [which]: { file: null, uploading: false, error: message },
       }));
     }
   }
 
-  function clearSlot(pieceId: string, which: "source" | "metadata") {
-    updatePiece(pieceId, (piece) => ({
+  async function clearSlot(pieceId: string, which: "source" | "metadata") {
+    patch(pieceId, (piece) => ({
       ...piece,
       [which]: { ...EMPTY_SLOT },
-      status: "idle",
-      resultFileId: null,
+      result: null,
       resultName: null,
+      status: "idle",
       error: null,
     }));
+    await save(pieceId, {
+      clear: [
+        which === "source" ? "source_file_id" : "metadata_file_id",
+        "result_file_id",
+        "result_filename",
+      ],
+    });
+    refreshStorage();
   }
 
-  async function generate(piece: ContentPiece) {
+  async function generate(piece: Piece) {
     const source = piece.source.file;
     const metadata = piece.metadata.file;
     if (!source || !metadata) return;
 
-    updatePiece(piece.id, (current) => ({ ...current, status: "generating", error: null }));
+    patch(piece.id, (current) => ({ ...current, status: "generating", error: null }));
 
     const stem = piece.outputStem.trim() || suggestedStem(source);
     const filename = withExtension(stem, extensionOf(metadata));
@@ -158,36 +245,58 @@ export default function FactoryPage() {
       if (finished.status !== "succeeded" || !finished.output_file_id) {
         throw new Error(finished.error ?? "Generation failed");
       }
-      updatePiece(piece.id, (current) => ({
+      const resultId = finished.output_file_id;
+      patch(piece.id, (current) => ({
         ...current,
-        status: "done",
-        resultFileId: finished.output_file_id,
+        status: "idle",
+        result: {
+          file_id: resultId,
+          session_id: source.session_id,
+          filename,
+          size: 0,
+          media_kind: source.media_kind,
+        },
         resultName: filename,
         error: null,
       }));
-    } catch (error) {
-      updatePiece(piece.id, (current) => ({
+      await save(piece.id, { result_file_id: resultId, result_filename: filename });
+      refreshStorage();
+    } catch (cause) {
+      patch(piece.id, (current) => ({
         ...current,
         status: "error",
-        error: String(error instanceof Error ? error.message : error),
+        error: cause instanceof Error ? cause.message : String(cause),
       }));
     }
   }
 
-  function addPiece() {
-    setPieces((current) => [...current, newPiece(current.length + 1)]);
+  async function addPiece() {
+    try {
+      const created = await createPiece(`Content piece ${pieces.length + 1}`);
+      setPieces((current) => [...current, fromDTO(created)]);
+    } catch (cause) {
+      setLoadError(String(cause));
+    }
   }
 
-  function removePiece(id: string) {
-    setPieces((current) => {
-      const next = current.filter((piece) => piece.id !== id);
-      return next.length ? next : [newPiece(1)];
-    });
+  async function removePiece(id: string) {
+    clearTimeout(saveTimers.current[id]);
+    setPieces((current) => current.filter((piece) => piece.id !== id));
+    try {
+      await deletePiece(id);
+    } catch (cause) {
+      setLoadError(String(cause));
+    }
+    refreshStorage();
+    if (pieces.length <= 1) {
+      const created = await createPiece("Content piece 1");
+      setPieces([fromDTO(created)]);
+    }
   }
 
-  function renamePiece(id: string, name: string) {
-    updatePiece(id, (piece) => ({ ...piece, name }));
-  }
+  const quotaPercent = storage
+    ? Math.min(100, Math.round((storage.used_bytes / Math.max(1, storage.quota_bytes)) * 100))
+    : 0;
 
   return (
     <div className="app">
@@ -218,21 +327,44 @@ export default function FactoryPage() {
       ) : (
         <>
           <section className="panel factory-intro">
-            <p>
-              Each content piece takes the picture or footage from <strong>Source content</strong> and
-              rebuilds it in the format of <strong>Metadata content</strong>, carrying that file's
-              metadata. Both files must be the same media type — two photos, or two videos.
+            <div className="factory-intro-row">
+              <p>
+                Each content piece takes the picture or footage from{" "}
+                <strong>Source content</strong> and rebuilds it in the format of{" "}
+                <strong>Metadata content</strong>, carrying that file's metadata. Both files must be
+                the same media type. Your pieces are saved to your account automatically.
+              </p>
+              {storage && (
+                <div className="storage-meter" title="Storage used by your saved pieces">
+                  <div className="storage-meter-label">
+                    {formatBytes(storage.used_bytes)} of {formatBytes(storage.quota_bytes)}
+                  </div>
+                  <div className="storage-meter-track">
+                    <div
+                      className={`storage-meter-fill${quotaPercent > 90 ? " storage-meter-full" : ""}`}
+                      style={{ width: `${quotaPercent}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+            <p className="factory-save-state">
+              {saving > 0 ? "Saving…" : loaded ? "All changes saved" : "Loading your pieces…"}
             </p>
           </section>
+
+          {loadError && (
+            <section className="panel">
+              <p className="piece-error">{loadError}</p>
+            </section>
+          )}
 
           <div className="piece-list">
             {pieces.map((piece, index) => {
               const source = piece.source.file;
               const metadata = piece.metadata.file;
               const mismatch =
-                source !== null &&
-                metadata !== null &&
-                source.media_kind !== metadata.media_kind;
+                source !== null && metadata !== null && source.media_kind !== metadata.media_kind;
               const busy = piece.status === "generating";
               const canGenerate = source !== null && metadata !== null && !mismatch && !busy;
 
@@ -242,7 +374,11 @@ export default function FactoryPage() {
                     <input
                       className="piece-name"
                       value={piece.name}
-                      onChange={(event) => renamePiece(piece.id, event.target.value)}
+                      onChange={(event) => {
+                        const name = event.target.value;
+                        patch(piece.id, (current) => ({ ...current, name }));
+                        saveDebounced(piece.id, { name });
+                      }}
                       placeholder={`Content piece ${index + 1}`}
                       aria-label={`Name of content piece ${index + 1}`}
                       spellCheck={false}
@@ -250,7 +386,7 @@ export default function FactoryPage() {
                     <button
                       type="button"
                       className="piece-remove"
-                      onClick={() => removePiece(piece.id)}
+                      onClick={() => void removePiece(piece.id)}
                       disabled={busy}
                     >
                       Remove
@@ -266,7 +402,7 @@ export default function FactoryPage() {
                       error={piece.source.error}
                       disabled={busy}
                       onFile={(file) => void handleFile(piece.id, "source", file)}
-                      onClear={() => clearSlot(piece.id, "source")}
+                      onClear={() => void clearSlot(piece.id, "source")}
                     />
 
                     <DropSlot
@@ -277,22 +413,22 @@ export default function FactoryPage() {
                       error={piece.metadata.error}
                       disabled={busy}
                       onFile={(file) => void handleFile(piece.id, "metadata", file)}
-                      onClear={() => clearSlot(piece.id, "metadata")}
+                      onClear={() => void clearSlot(piece.id, "metadata")}
                     />
 
                     <div className="slot-wrapper">
                       <div className="slot-label">3 · Result</div>
-                      <div className={`slot slot-result${piece.status === "done" ? " slot-filled" : ""}`}>
-                        {piece.status === "done" && piece.resultFileId ? (
+                      <div className={`slot slot-result${piece.result ? " slot-filled" : ""}`}>
+                        {piece.result ? (
                           <>
-                            <FilePreview fileId={piece.resultFileId} alt="Result preview" />
+                            <FilePreview fileId={piece.result.file_id} alt="Result preview" />
                             <p className="slot-filename" title={piece.resultName ?? ""}>
                               {piece.resultName}
                             </p>
                             <p className="slot-meta">Ready</p>
                             <a
                               className="slot-download"
-                              href={downloadUrl(piece.resultFileId)}
+                              href={downloadUrl(piece.result.file_id)}
                               download={piece.resultName ?? undefined}
                             >
                               Download
@@ -314,17 +450,14 @@ export default function FactoryPage() {
                             className="output-name-input"
                             value={piece.outputStem}
                             placeholder={suggestedStem(source) || "file name"}
-                            onChange={(event) =>
-                              updatePiece(piece.id, (current) => ({
-                                ...current,
-                                outputStem: event.target.value,
-                              }))
-                            }
+                            onChange={(event) => {
+                              const outputStem = event.target.value;
+                              patch(piece.id, (current) => ({ ...current, outputStem }));
+                              saveDebounced(piece.id, { output_stem: outputStem });
+                            }}
                             disabled={busy}
                             spellCheck={false}
                           />
-                          {/* Hide the suffix once the typed name carries it,
-                              otherwise the field reads as a double extension. */}
                           {!alreadyHasExtension(piece.outputStem.trim(), extensionOf(metadata)) && (
                             <span className="output-name-ext">{extensionOf(metadata) || "…"}</span>
                           )}
@@ -339,9 +472,7 @@ export default function FactoryPage() {
                       {metadata?.media_kind}. Both must be the same media type.
                     </p>
                   )}
-                  {piece.status === "error" && piece.error && (
-                    <p className="piece-error">{piece.error}</p>
-                  )}
+                  {piece.error && <p className="piece-error">{piece.error}</p>}
 
                   <div className="piece-actions">
                     <button
@@ -350,7 +481,7 @@ export default function FactoryPage() {
                       onClick={() => void generate(piece)}
                       disabled={!canGenerate}
                     >
-                      {busy ? "Generating…" : piece.status === "done" ? "Regenerate" : "Generate Result"}
+                      {busy ? "Generating…" : piece.result ? "Regenerate" : "Generate Result"}
                     </button>
                   </div>
                 </section>
@@ -359,7 +490,7 @@ export default function FactoryPage() {
           </div>
 
           <div className="piece-list-actions">
-            <button type="button" className="add-piece-button" onClick={addPiece}>
+            <button type="button" className="add-piece-button" onClick={() => void addPiece()}>
               + Add content piece
             </button>
           </div>

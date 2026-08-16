@@ -155,16 +155,67 @@ def delete_session(session_id: str) -> None:
         shutil.rmtree(directory)
 
 
-def cleanup_expired_sessions(max_age_hours: int) -> int:
-    from api.database import delete_upload_sessions
+def file_id_of(path: Path) -> str:
+    """Uploads are stored as ``<file_id>_<original name>``."""
+    return path.name.split("_", 1)[0]
 
-    expired: list[str] = []
+
+def cleanup_expired_sessions(max_age_hours: int) -> int:
+    """Remove expired uploads, keeping anything a saved content piece points at.
+
+    Sweeps per file rather than per directory: a session may hold both a pinned
+    file and disposable scratch, and dropping the whole directory would take
+    saved projects with it. A session row is only removed once its directory is
+    actually gone, so ownership checks keep working for surviving files.
+    """
+    from api.database import delete_upload_sessions, referenced_file_ids
+
+    pinned = referenced_file_ids()
+    removed_sessions: list[str] = []
     cutoff = datetime.now(UTC).timestamp() - max_age_hours * 3600
+
     for session_path in upload_root().iterdir():
         if not session_path.is_dir():
             continue
-        if session_path.stat().st_mtime < cutoff:
+        if session_path.stat().st_mtime >= cutoff:
+            continue
+
+        for candidate in session_path.iterdir():
+            if candidate.is_file() and file_id_of(candidate) not in pinned:
+                candidate.unlink(missing_ok=True)
+
+        if not any(session_path.iterdir()):
             shutil.rmtree(session_path, ignore_errors=True)
-            expired.append(session_path.name)
-    delete_upload_sessions(expired)
-    return len(expired)
+            removed_sessions.append(session_path.name)
+
+    delete_upload_sessions(removed_sessions)
+    return len(removed_sessions)
+
+
+def default_quota_bytes() -> int:
+    return int(os.environ.get("USER_STORAGE_QUOTA_BYTES", str(2 * 1024 * 1024 * 1024)))
+
+
+def session_usage_bytes(session_ids: list[str]) -> int:
+    total = 0
+    root = upload_root()
+    for session_id in session_ids:
+        directory = root / session_id
+        if not directory.is_dir():
+            continue
+        for candidate in directory.iterdir():
+            if candidate.is_file():
+                total += candidate.stat().st_size
+    return total
+
+
+def delete_file_by_id(file_id: str) -> bool:
+    """Delete one stored file. Returns True when something was removed."""
+    for session_path in upload_root().iterdir():
+        if not session_path.is_dir():
+            continue
+        for candidate in session_path.glob(f"{file_id}_*"):
+            if candidate.is_file():
+                candidate.unlink(missing_ok=True)
+                return True
+    return False

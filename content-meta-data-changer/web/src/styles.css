@@ -1147,3 +1147,59 @@ button {
   padding: 1px 5px;
   font-size: 12px;
 }
+
+/* Storage meter and save state in the Factory intro panel */
+
+.factory-intro-row {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.factory-save-state {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: #6e6e6e;
+}
+
+.storage-meter {
+  flex-shrink: 0;
+  width: 180px;
+}
+
+.storage-meter-label {
+  font-size: 12px;
+  color: #858585;
+  margin-bottom: 6px;
+  white-space: nowrap;
+}
+
+.storage-meter-track {
+  height: 6px;
+  border-radius: 3px;
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  overflow: hidden;
+}
+
+.storage-meter-fill {
+  height: 100%;
+  background: #4a90d9;
+  transition: width 0.3s;
+}
+
+.storage-meter-full {
+  background: #e53935;
+}
+
+@media (max-width: 700px) {
+  .factory-intro-row {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .storage-meter {
+    width: 100%;
+  }
+}

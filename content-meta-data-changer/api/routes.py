@@ -9,7 +9,9 @@ from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from api.auth import (
+    Owner,
     assert_file_access,
+    assert_owns_piece,
     assert_session_access,
     auth_config,
     build_google_login_url,
@@ -19,13 +21,26 @@ from api.auth import (
     get_current_user_optional,
     new_client_id,
     register_session_owner,
+    require_owner,
     require_user_or_anonymous,
     safe_return_url,
     set_client_cookie,
     set_session_cookie,
     user_to_dto,
 )
-from api.database import UserRecord, delete_auth_session
+from api.database import (
+    UPDATABLE_PIECE_FIELDS,
+    ContentPieceRecord,
+    UserRecord,
+    create_content_piece,
+    delete_auth_session,
+    delete_content_piece,
+    get_content_piece,
+    list_content_pieces,
+    referenced_file_ids,
+    sessions_for_owner,
+    update_content_piece,
+)
 from api.jobs import (
     create_convert_job,
     create_factory_job,
@@ -37,8 +52,11 @@ from api.jobs import (
 from api.storage import (
     StorageError,
     create_session,
+    default_quota_bytes,
+    delete_file_by_id,
     get_file,
     save_upload,
+    session_usage_bytes,
     stored_file_to_dto,
 )
 from core.errors import LayoutError, UnsupportedMediaError
@@ -52,12 +70,14 @@ from core.inspect import (
 )
 from core.models import (
     AuthConfigDTO,
+    ContentPieceDTO,
     ErrorResponse,
     JobResult,
     LayoutResult,
     MetadataResult,
     SegmentBytesResult,
     SessionDTO,
+    StorageUsageDTO,
     StoredFileDTO,
     TextResult,
     UserDTO,
@@ -227,6 +247,27 @@ async def upload_file(
             status_code=413,
             detail={"error": "Upload exceeds maximum allowed size.", "code": "payload_too_large"},
         )
+
+    # Saved pieces keep their files indefinitely, so without a per-user ceiling
+    # one account could fill the volume for everyone.
+    owner_user_id = user.id if user is not None else None
+    owner_client_id = None if user is not None else client_id
+    quota = default_quota_bytes()
+    used = session_usage_bytes(
+        sessions_for_owner(user_id=owner_user_id, client_id=owner_client_id)
+    )
+    if used + len(data) > quota:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "error": (
+                    f"Storage quota reached ({used / 1e9:.2f} GB of {quota / 1e9:.2f} GB used). "
+                    "Delete a saved content piece to free space."
+                ),
+                "code": "quota_exceeded",
+            },
+        )
+
     filename = file.filename or "upload.bin"
     try:
         stored = save_upload(session_id, filename, data)
@@ -375,3 +416,133 @@ def job_status(
     if record.session_id is not None:
         assert_session_access(record.session_id, user, client_id)
     return job_to_result(record)
+
+
+# --- Saved content pieces ---------------------------------------------------
+
+
+class CreatePieceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class UpdatePieceRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    output_stem: str | None = Field(default=None, max_length=200)
+    source_file_id: str | None = None
+    metadata_file_id: str | None = None
+    result_file_id: str | None = None
+    result_filename: str | None = None
+    position: int | None = None
+    # Distinguishes "leave unchanged" from "clear this slot", which a plain
+    # None cannot express.
+    clear: list[str] = Field(default_factory=list)
+
+
+def _resolve_stored(file_id: str | None) -> StoredFileDTO | None:
+    if not file_id:
+        return None
+    try:
+        return stored_file_to_dto(get_file(file_id))
+    except StorageError:
+        return None  # pinned file went missing; surface as an empty slot
+
+
+def _piece_to_dto(record: ContentPieceRecord) -> ContentPieceDTO:
+    return ContentPieceDTO(
+        id=record.id,
+        name=record.name,
+        output_stem=record.output_stem,
+        source_file_id=record.source_file_id,
+        metadata_file_id=record.metadata_file_id,
+        result_file_id=record.result_file_id,
+        result_filename=record.result_filename,
+        position=record.position,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        source_file=_resolve_stored(record.source_file_id),
+        metadata_file=_resolve_stored(record.metadata_file_id),
+        result_file=_resolve_stored(record.result_file_id),
+    )
+
+
+def _load_owned_piece(piece_id: str, owner: Owner) -> ContentPieceRecord:
+    record = get_content_piece(piece_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "Content piece not found.", "code": "not_found"},
+        )
+    assert_owns_piece(owner, record.user_id, record.client_id)
+    return record
+
+
+@router.get("/pieces", response_model=list[ContentPieceDTO])
+def list_pieces(owner: Owner = Depends(require_owner)) -> list[ContentPieceDTO]:
+    records = list_content_pieces(user_id=owner.user_id, client_id=owner.client_id)
+    return [_piece_to_dto(record) for record in records]
+
+
+@router.post("/pieces", response_model=ContentPieceDTO, status_code=201)
+def create_piece(
+    body: CreatePieceRequest,
+    owner: Owner = Depends(require_owner),
+) -> ContentPieceDTO:
+    existing = list_content_pieces(user_id=owner.user_id, client_id=owner.client_id)
+    record = create_content_piece(
+        user_id=owner.user_id,
+        client_id=owner.client_id,
+        name=body.name,
+        position=len(existing),
+    )
+    return _piece_to_dto(record)
+
+
+@router.patch("/pieces/{piece_id}", response_model=ContentPieceDTO)
+def patch_piece(
+    piece_id: str,
+    body: UpdatePieceRequest,
+    owner: Owner = Depends(require_owner),
+    user: UserRecord | None = Depends(get_current_user_optional),
+    client_id: str | None = Depends(get_client_id_optional),
+) -> ContentPieceDTO:
+    _load_owned_piece(piece_id, owner)
+
+    changes = body.model_dump(exclude_none=True, exclude={"clear"})
+    for field in body.clear:
+        if field in UPDATABLE_PIECE_FIELDS:
+            changes[field] = None
+
+    # Never let a piece point at a file the caller cannot read.
+    for field in ("source_file_id", "metadata_file_id", "result_file_id"):
+        file_id = changes.get(field)
+        if file_id:
+            ensure_file_access(str(file_id), user, client_id)
+
+    record = update_content_piece(piece_id, changes)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "Content piece not found.", "code": "not_found"},
+        )
+    return _piece_to_dto(record)
+
+
+@router.delete("/pieces/{piece_id}", status_code=204)
+def remove_piece(piece_id: str, owner: Owner = Depends(require_owner)) -> Response:
+    record = _load_owned_piece(piece_id, owner)
+    # Free the storage immediately, but keep files another piece still uses.
+    still_used = referenced_file_ids(excluding_piece=piece_id)
+    for file_id in record.file_ids():
+        if file_id not in still_used:
+            delete_file_by_id(file_id)
+    delete_content_piece(piece_id)
+    return Response(status_code=204)
+
+
+@router.get("/storage", response_model=StorageUsageDTO)
+def storage_usage(owner: Owner = Depends(require_owner)) -> StorageUsageDTO:
+    sessions = sessions_for_owner(user_id=owner.user_id, client_id=owner.client_id)
+    return StorageUsageDTO(
+        used_bytes=session_usage_bytes(sessions),
+        quota_bytes=default_quota_bytes(),
+    )

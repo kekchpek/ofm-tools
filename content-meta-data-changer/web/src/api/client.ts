@@ -263,3 +263,67 @@ export async function pollJob(jobId: string): Promise<JobResult> {
   }
   throw new Error("Job timed out");
 }
+
+export type ContentPiece = {
+  id: string;
+  name: string;
+  output_stem: string;
+  source_file_id: string | null;
+  metadata_file_id: string | null;
+  result_file_id: string | null;
+  result_filename: string | null;
+  position: number;
+  created_at: string;
+  updated_at: string;
+  source_file: StoredFile | null;
+  metadata_file: StoredFile | null;
+  result_file: StoredFile | null;
+};
+
+export type PiecePatch = Partial<{
+  name: string;
+  output_stem: string;
+  source_file_id: string;
+  metadata_file_id: string;
+  result_file_id: string;
+  result_filename: string;
+  position: number;
+  /** Names of fields to null out — a JSON null cannot express this. */
+  clear: string[];
+}>;
+
+export type StorageUsage = {
+  used_bytes: number;
+  quota_bytes: number;
+};
+
+export function listPieces(): Promise<ContentPiece[]> {
+  return request<ContentPiece[]>("/api/v1/pieces");
+}
+
+export function createPiece(name: string): Promise<ContentPiece> {
+  return request<ContentPiece>("/api/v1/pieces", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function updatePiece(pieceId: string, patch: PiecePatch): Promise<ContentPiece> {
+  return request<ContentPiece>(`/api/v1/pieces/${pieceId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deletePiece(pieceId: string): Promise<void> {
+  const response = await apiFetch(`/api/v1/pieces/${pieceId}`, { method: "DELETE" });
+  if (!response.ok && response.status !== 404) {
+    throw new Error(await response.text());
+  }
+}
+
+export function getStorageUsage(): Promise<StorageUsage> {
+  return request<StorageUsage>("/api/v1/storage");
+}

@@ -102,7 +102,8 @@ In Railway → **Variables**, add:
 | `AUTH_COOKIE_SAMESITE`   | `none`                                                                | Required when frontend and API are on different domains |
 | `AUTH_SESSION_TTL_HOURS` | `168`                                                                 | 7 days                                                  |
 | `MAX_UPLOAD_BYTES`       | `524288000`                                                           | 500 MB                                                  |
-| `SESSION_TTL_HOURS`      | `24`                                                                  | Temp upload cleanup                                     |
+| `SESSION_TTL_HOURS`      | `24`                                                                  | Temp upload cleanup (files in saved pieces are exempt)  |
+| `USER_STORAGE_QUOTA_BYTES` | `2147483648`                                                        | Per-user ceiling for saved pieces — size the volume for this x users |
 | `JOB_WORKERS`            | `2`                                                                   | Background job threads                                  |
 
 

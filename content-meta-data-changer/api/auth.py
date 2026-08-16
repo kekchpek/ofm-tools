@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import httpx
@@ -299,3 +300,53 @@ def generate_auth_secret_if_missing() -> None:
     if os.environ.get("AUTH_SECRET"):
         return
     os.environ["AUTH_SECRET"] = secrets.token_urlsafe(32)
+
+
+# --- Ownership for saved content pieces and storage quota -------------------
+
+
+@dataclass(frozen=True)
+class Owner:
+    """Who a saved piece or upload belongs to: a Google user, else a browser."""
+
+    user_id: str | None
+    client_id: str | None
+
+    @property
+    def key(self) -> str:
+        return self.user_id or f"anon:{self.client_id}"
+
+
+def require_owner(
+    user: UserRecord | None = Depends(get_current_user_optional),
+    client_id: str | None = Depends(get_client_id_optional),
+) -> Owner:
+    if auth_enabled():
+        if user is None:
+            raise HTTPException(
+                status_code=401,
+                detail={"error": "Sign in required.", "code": "unauthorized"},
+            )
+        return Owner(user_id=user.id, client_id=None)
+    if not client_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "No client session. Create an upload session first.",
+                "code": "no_client_session",
+            },
+        )
+    return Owner(user_id=None, client_id=client_id)
+
+
+def assert_owns_piece(owner: Owner, piece_user_id: str | None, piece_client_id: str | None) -> None:
+    if owner.user_id is not None:
+        if piece_user_id == owner.user_id:
+            return
+    elif piece_client_id is not None and owner.client_id is not None:
+        if secrets.compare_digest(piece_client_id, owner.client_id):
+            return
+    raise HTTPException(
+        status_code=404,
+        detail={"error": "Content piece not found.", "code": "not_found"},
+    )

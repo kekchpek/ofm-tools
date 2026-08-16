@@ -92,6 +92,7 @@ bash scripts/qa_web_flow.sh
 | `SESSION_TTL_HOURS` | `24` | Temp file retention target |
 | `CLEANUP_INTERVAL_MINUTES` | `60` | How often expired sessions are swept |
 | `ENABLE_API_DOCS` | `1` | Set `0` in production to hide `/docs`, `/redoc`, `/openapi.json` |
+| `USER_STORAGE_QUOTA_BYTES` | `2147483648` | Per-user ceiling for saved content pieces (2 GB) |
 | `OFM_CONTENT_DIR` | `../OfmContent` | Sample media used by tests |
 | `GOOGLE_CLIENT_ID` | — | Enables Google sign-in when set with secret |
 | `GOOGLE_CLIENT_SECRET` | — | Google OAuth client secret (keep in `.env` only) |

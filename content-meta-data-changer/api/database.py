@@ -57,6 +57,27 @@ CREATE TABLE IF NOT EXISTS oauth_states (
     return_url TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );
+
+-- Saved OFM Factory projects. Owned like upload_sessions: a signed-in user or
+-- an anonymous browser cookie. The referenced files are pinned against TTL
+-- cleanup for as long as the row exists.
+CREATE TABLE IF NOT EXISTS content_pieces (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT,
+    client_id TEXT,
+    name TEXT NOT NULL,
+    output_stem TEXT NOT NULL DEFAULT '',
+    source_file_id TEXT,
+    metadata_file_id TEXT,
+    result_file_id TEXT,
+    result_filename TEXT,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pieces_user ON content_pieces(user_id);
+CREATE INDEX IF NOT EXISTS idx_pieces_client ON content_pieces(client_id);
 """
 
 _initialized_paths: set[Path] = set()
@@ -278,3 +299,149 @@ def consume_oauth_state(state: str) -> str | None:
     if datetime.fromisoformat(str(row["expires_at"])) <= datetime.now(UTC):
         return None
     return str(row["return_url"])
+
+
+# --- Saved content pieces ---------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ContentPieceRecord:
+    id: str
+    user_id: str | None
+    client_id: str | None
+    name: str
+    output_stem: str
+    source_file_id: str | None
+    metadata_file_id: str | None
+    result_file_id: str | None
+    result_filename: str | None
+    position: int
+    created_at: str
+    updated_at: str
+
+    def file_ids(self) -> list[str]:
+        return [
+            file_id
+            for file_id in (self.source_file_id, self.metadata_file_id, self.result_file_id)
+            if file_id
+        ]
+
+
+def _piece_from_row(row: sqlite3.Row) -> ContentPieceRecord:
+    return ContentPieceRecord(
+        id=str(row["id"]),
+        user_id=str(row["user_id"]) if row["user_id"] else None,
+        client_id=str(row["client_id"]) if row["client_id"] else None,
+        name=str(row["name"]),
+        output_stem=str(row["output_stem"] or ""),
+        source_file_id=str(row["source_file_id"]) if row["source_file_id"] else None,
+        metadata_file_id=str(row["metadata_file_id"]) if row["metadata_file_id"] else None,
+        result_file_id=str(row["result_file_id"]) if row["result_file_id"] else None,
+        result_filename=str(row["result_filename"]) if row["result_filename"] else None,
+        position=int(row["position"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _owner_clause(user_id: str | None, client_id: str | None) -> tuple[str, tuple]:
+    if user_id is not None:
+        return "user_id = ?", (user_id,)
+    return "client_id = ?", (client_id,)
+
+
+def create_content_piece(
+    *,
+    user_id: str | None,
+    client_id: str | None,
+    name: str,
+    position: int,
+) -> ContentPieceRecord:
+    piece_id = str(uuid.uuid4())
+    now = datetime.now(UTC).isoformat()
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO content_pieces
+                (id, user_id, client_id, name, output_stem, position, created_at, updated_at)
+            VALUES (?, ?, ?, ?, '', ?, ?, ?)
+            """,
+            (piece_id, user_id, client_id, name, position, now, now),
+        )
+    return get_content_piece(piece_id)  # type: ignore[return-value]
+
+
+def get_content_piece(piece_id: str) -> ContentPieceRecord | None:
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT * FROM content_pieces WHERE id = ?", (piece_id,)
+        ).fetchone()
+    return _piece_from_row(row) if row is not None else None
+
+
+def list_content_pieces(
+    *, user_id: str | None, client_id: str | None
+) -> list[ContentPieceRecord]:
+    clause, params = _owner_clause(user_id, client_id)
+    with connect() as connection:
+        rows = connection.execute(
+            f"SELECT * FROM content_pieces WHERE {clause} ORDER BY position, created_at",
+            params,
+        ).fetchall()
+    return [_piece_from_row(row) for row in rows]
+
+
+UPDATABLE_PIECE_FIELDS = frozenset(
+    {
+        "name",
+        "output_stem",
+        "source_file_id",
+        "metadata_file_id",
+        "result_file_id",
+        "result_filename",
+        "position",
+    }
+)
+
+
+def update_content_piece(piece_id: str, changes: dict[str, object]) -> ContentPieceRecord | None:
+    fields = {key: value for key, value in changes.items() if key in UPDATABLE_PIECE_FIELDS}
+    if fields:
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        with connect() as connection:
+            connection.execute(
+                f"UPDATE content_pieces SET {assignments}, updated_at = ? WHERE id = ?",
+                (*fields.values(), datetime.now(UTC).isoformat(), piece_id),
+            )
+    return get_content_piece(piece_id)
+
+
+def delete_content_piece(piece_id: str) -> None:
+    with connect() as connection:
+        connection.execute("DELETE FROM content_pieces WHERE id = ?", (piece_id,))
+
+
+def referenced_file_ids(*, excluding_piece: str | None = None) -> set[str]:
+    """Every file id any saved piece points at — these must survive TTL cleanup."""
+    query = "SELECT source_file_id, metadata_file_id, result_file_id FROM content_pieces"
+    params: tuple = ()
+    if excluding_piece is not None:
+        query += " WHERE id != ?"
+        params = (excluding_piece,)
+    with connect() as connection:
+        rows = connection.execute(query, params).fetchall()
+    return {
+        str(value)
+        for row in rows
+        for value in (row["source_file_id"], row["metadata_file_id"], row["result_file_id"])
+        if value
+    }
+
+
+def sessions_for_owner(*, user_id: str | None, client_id: str | None) -> list[str]:
+    clause, params = _owner_clause(user_id, client_id)
+    with connect() as connection:
+        rows = connection.execute(
+            f"SELECT session_id FROM upload_sessions WHERE {clause}", params
+        ).fetchall()
+    return [str(row["session_id"]) for row in rows]

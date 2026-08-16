@@ -206,3 +206,30 @@ def summary_from_layout(layout: FileLayout) -> InspectSummary:
 
 
 CATEGORY_LABELS_EXPORT = CATEGORY_LABELS
+
+
+class ContentPieceDTO(BaseModel):
+    id: str
+    name: str
+    output_stem: str
+    source_file_id: str | None = None
+    metadata_file_id: str | None = None
+    result_file_id: str | None = None
+    result_filename: str | None = None
+    position: int
+    created_at: str
+    updated_at: str
+    # Resolved server-side so the client can tell "saved but file gone" from
+    # "never uploaded", and can render slots without extra round trips.
+    source_file: StoredFileDTO | None = None
+    metadata_file: StoredFileDTO | None = None
+    result_file: StoredFileDTO | None = None
+
+
+class StorageUsageDTO(BaseModel):
+    used_bytes: int
+    quota_bytes: int
+
+    @property
+    def remaining_bytes(self) -> int:
+        return max(0, self.quota_bytes - self.used_bytes)
