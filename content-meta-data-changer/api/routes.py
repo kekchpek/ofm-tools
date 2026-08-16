@@ -81,6 +81,7 @@ from api.storage import (
     stored_file_to_dto,
 )
 from core.errors import LayoutError, UnsupportedMediaError
+from media_types import content_type_for
 from core.inspect import (
     inspect_layout,
     inspect_metadata,
@@ -381,7 +382,11 @@ def download_file(stored=Depends(get_stored_file)) -> StreamingResponse:
                 yield chunk
 
     headers = {"Content-Disposition": f'attachment; filename="{stored.filename}"'}
-    return StreamingResponse(iterator(), media_type="application/octet-stream", headers=headers)
+    # A real media type is what lets iOS offer "Save Image" / "Save Video" when
+    # the file is passed to the share sheet.
+    return StreamingResponse(
+        iterator(), media_type=content_type_for(stored.path), headers=headers
+    )
 
 
 @router.post("/jobs/transfer", response_model=JobResult, status_code=202)

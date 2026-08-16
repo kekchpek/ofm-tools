@@ -1431,3 +1431,14 @@ button {
   color: #6e6e6e;
   line-height: 1.5;
 }
+
+/* The result save control is a button now, not a link. */
+button.slot-download {
+  font-family: inherit;
+  border: 1px solid #43a047;
+}
+
+button.slot-download:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}

@@ -3,7 +3,6 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   createPiece,
   deletePiece,
-  downloadUrl,
   getOfm,
   getStorageUsage,
   listPieces,
@@ -23,6 +22,7 @@ import ConnectionError from "./ConnectionError";
 import DropSlot from "./DropSlot";
 import MembersPanel from "./MembersPanel";
 import FilePreview from "./FilePreview";
+import { canShareFiles, saveFile } from "./saveFile";
 import { useSession } from "./useSession";
 
 type Slot = {
@@ -109,6 +109,10 @@ export default function FactoryPage() {
   const [storage, setStorage] = useState<StorageUsage | null>(null);
   const [saving, setSaving] = useState(0);
   const [adding, setAdding] = useState(false);
+  const [savingFile, setSavingFile] = useState<string | null>(null);
+  // Computed once: on iPhone this puts "Save Image"/"Save Video" — i.e. the
+  // photo library — one tap away, which a plain download cannot reach.
+  const [sharingAvailable] = useState(canShareFiles);
 
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
@@ -271,6 +275,16 @@ export default function FactoryPage() {
         status: "error",
         error: cause instanceof Error ? cause.message : String(cause),
       }));
+    }
+  }
+
+  async function handleSave(piece: Piece) {
+    if (!piece.result || savingFile) return;
+    setSavingFile(piece.id);
+    try {
+      await saveFile(piece.result.file_id, piece.resultName ?? piece.result.filename);
+    } finally {
+      setSavingFile(null);
     }
   }
 
@@ -455,13 +469,18 @@ export default function FactoryPage() {
                               {piece.resultName}
                             </p>
                             <p className="slot-meta">Ready</p>
-                            <a
+                            <button
+                              type="button"
                               className="slot-download"
-                              href={downloadUrl(piece.result.file_id)}
-                              download={piece.resultName ?? undefined}
+                              disabled={savingFile === piece.id}
+                              onClick={() => void handleSave(piece)}
                             >
-                              Download
-                            </a>
+                              {savingFile === piece.id
+                                ? "Preparing…"
+                                : sharingAvailable
+                                  ? "Save"
+                                  : "Download"}
+                            </button>
                           </>
                         ) : busy ? (
                           <p className="slot-state">Generating…</p>

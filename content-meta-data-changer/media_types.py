@@ -22,3 +22,22 @@ def is_convertible_video(path: Path) -> bool:
 
 def is_convertible_image(path: Path) -> bool:
     return is_image_path(path)
+
+
+#: Content types for download responses. iOS decides whether to offer
+#: "Save Image" / "Save Video" in the share sheet from this, so
+#: application/octet-stream would hide those options.
+CONTENT_TYPES = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/x-m4v",
+    ".mov": "video/quicktime",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+}
+
+
+def content_type_for(path: Path) -> str:
+    return CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
